@@ -2,7 +2,7 @@
 import type { ChatMessageType, ChatParamsType } from "$lib/chatParams";
 import { chatParams, updateChatParams } from "$lib/chatParams";
 import { addAIMessage, addUserMessage, countMessages, initialMessages, messageDisplaySetting, messageInfo, messages, processInitialMessages, type MessageInfoType } from "$lib/messages";
-import { allowedOrigins, highlightedStrings, isLoading, thumbs } from "$lib/stores";
+import { allowedParentDomainSuffixes, allowedParentHostnames, highlightedStrings, isLoading, thumbs } from "$lib/stores";
 import { tick } from "svelte";
 import { get, writable, type Writable } from "svelte/store";
 import type { IResult } from "ua-parser-js";
@@ -342,14 +342,33 @@ export function isCorrectOriginAndData(event: MessageEvent): boolean {
     // not in frame, so don't need to check origin and data
     if (typeof parent === "undefined" || parent === window) return false;
 
-    const origin = event.origin.toLowerCase();
+    // Parse the origin instead of substring-matching it: only the parsed
+    // hostname says where a message actually came from.
+    let originHostname: string;
+    let sameOrigin = false;
+    try {
+        const originUrl = new URL(event.origin.toLowerCase());
+        originHostname = originUrl.hostname;
+        sameOrigin = originUrl.origin === window.location.origin;
+    } catch {
+        return false; // unparseable origin (e.g. "null" from sandboxed frames) -> reject
+    }
 
-    // skip vercel.live
-    if (origin.includes("vercel.live")) {
+    // skip vercel.live (Vercel preview toolbar posts its own messages)
+    if (originHostname === "vercel.live" || originHostname.endsWith(".vercel.live")) {
         return false;
     }
+
+    const hostnameAllowed =
+        sameOrigin ||  // the app's own /frame mock page embedding itself
+        get(allowedParentHostnames).some((allowed) => originHostname === allowed) ||
+        get(allowedParentDomainSuffixes).some(
+            (domain) => originHostname === domain || originHostname.endsWith("." + domain)
+        );
+
+    const origin = event.origin.toLowerCase();
     let parentObj;
-    if (get(allowedOrigins).some((allowedOrigin) => origin.includes(allowedOrigin))) {
+    if (hostnameAllowed) {
         console.log("Received message from parent (allowed origin):", origin);
         parentObj = event.data;
         if (!parentObj) return false; // no data received from parent
