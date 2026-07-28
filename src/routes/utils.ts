@@ -237,13 +237,22 @@ function prepareParentMessage(
     nextSection: boolean,
 ): string {
 
-    let messageForParent: { messages: ChatMessageType[], userAgentInfo: UserAgentInfoType, thumbs: any[], highlightedStrings: string[], messageInfo: MessageInfoType, nextSection: boolean } = {
+    // Save the chat configuration alongside the transcript for research
+    // provenance (exactly which model/settings served this participant).
+    // initialMessages are dropped to save space (the transcript already
+    // contains them) and the encrypted API credential is redacted — it is
+    // not data and does not belong in survey responses.
+    const { initialMessages: _initialMessages, ...chatParamsClone } = structuredClone(get(chatParams));
+    chatParamsClone.model = { ...chatParamsClone.model, apiKeyEncrypted: "[redacted]" };
+
+    let messageForParent: { messages: ChatMessageType[], userAgentInfo: UserAgentInfoType, thumbs: any[], highlightedStrings: string[], messageInfo: MessageInfoType, nextSection: boolean, chatParams: any } = {
         messages: [],
         userAgentInfo: get(userAgentInfo).client,
         thumbs: get(thumbs),
         highlightedStrings: get(highlightedStrings),
         messageInfo: get(messageInfo),
         nextSection,
+        chatParams: chatParamsClone,
     };
 
     let firstMessageTime = new Date(messages[0].createdAt || Date.now());

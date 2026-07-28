@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { ChatMessageType } from "$lib/chatParams";
     import { chatParams } from "$lib/chatParams";
-    import bot from "$lib/icons/bot00.svg";
+    import medicalAvatar from "$lib/icons/medical2.png";
     import thumbsdown from "$lib/icons/thumbsdown.svg";
     import thumbsup from "$lib/icons/thumbsup.svg";
     import { isLoading } from "$lib/stores";
@@ -36,14 +36,21 @@
 <div class="chat chat-start relative">
     {#if $chatParams.appearance.showBotAvatar}
         <div class="chat-image avatar indicator absolute top-2">
-            {#if $isLoading && index === nMessages - 1}
-                <span
-                    class="indicator-item badge badge-warning bg-[#6766db] text-white text-xs"
-                    >...</span
-                >
+            {#if ($isLoading && index === nMessages - 1) || message.content === ""}
+                {#if $chatParams.ui.stream}
+                    <span
+                        class="loading loading-dots loading-sm indicator-item badge badge-warning text-white mr-1 mt-2 bg-[#6766db]"
+                    >
+                    </span>
+                {:else}
+                    <span
+                        class="loading loading-dots loading-sm indicator-item badge badge-warning text-white mr-1 mt-2 bg-[#a9e415]"
+                    >
+                    </span>
+                {/if}
             {/if}
-            <div class="w-8 xs:w-10 rounded-full">
-                <img alt="Assistant avatar" src={bot} />
+            <div class="w-12 mt-2 rounded-full">
+                <img alt="Assistant avatar" src={medicalAvatar} />
             </div>
         </div>
     {/if}

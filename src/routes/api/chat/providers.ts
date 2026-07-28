@@ -42,6 +42,8 @@ export const createOpenAIProvider = (chatParams: ChatParamsType, enableStreaming
         apiKey: decrypt(ENCRYPTION_KEY, ENCRYPTION_IV, chatParams.model.apiKeyEncrypted),
         maxTokens: chatParams.model.options.maxTokens,
         temperature: chatParams.model.options.temperature,
+        topP: chatParams.model.options.topP,
+        stop: chatParams.model.options.stop,
         frequencyPenalty: chatParams.model.options.frequencyPenalty,
         presencePenalty: chatParams.model.options.presencePenalty,
         maxRetries: chatParams.model.options.maxRetries,

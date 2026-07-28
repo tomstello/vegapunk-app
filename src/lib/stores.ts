@@ -27,7 +27,9 @@ export const allowedParentHostnames: Writable<string[]> = writable([
 ]);
 
 // Any subdomain of these domains may act as the parent (covers institutional
-// Qualtrics instances like cornell.ca1.qualtrics.com).
+// Qualtrics instances like cornell.ca1.qualtrics.com, and Cornell-hosted study
+// pages such as health.infosci.cornell.edu from the Walgreens-era setup).
 export const allowedParentDomainSuffixes: Writable<string[]> = writable([
     "qualtrics.com",
+    "cornell.edu",
 ]);

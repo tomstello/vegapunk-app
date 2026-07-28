@@ -20,6 +20,8 @@ export interface ChatMessageType {
 export interface ModelOptions {
     maxTokens?: number;
     temperature?: number;
+    topP?: number;
+    stop?: string[];
     presencePenalty?: number;
     frequencyPenalty?: number;
     maxRetries?: number;
@@ -87,6 +89,8 @@ export const chatParams = writable<ChatParamsType>({
         options: {
             maxTokens: undefined,
             temperature: undefined,
+            topP: undefined,
+            stop: undefined,
             presencePenalty: undefined,
             frequencyPenalty: undefined,
             maxRetries: 5,
