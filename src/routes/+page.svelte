@@ -92,8 +92,26 @@
 			initializeChat(scrollElement, nextSection);
 		}
 
+		// Flush the transcript to the parent when the participant leaves or the
+		// phone screen locks / app is backgrounded (visibilitychange covers the
+		// mobile cases pagehide misses). postMessage to the same-tab parent is
+		// delivered synchronously enough to survive teardown, so any partially
+		// streamed assistant text is captured too.
+		function flushToParent() {
+			if ($inFrame && $messages.length > 0) {
+				sendMessageToParent($messages, false);
+			}
+		}
+		function handleVisibilityChange() {
+			if (document.visibilityState === "hidden") flushToParent();
+		}
+		window.addEventListener("pagehide", flushToParent);
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+
 		return () => {
 			window.removeEventListener("message", handleMessage);
+			window.removeEventListener("pagehide", flushToParent);
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
 		};
 	});
 </script>

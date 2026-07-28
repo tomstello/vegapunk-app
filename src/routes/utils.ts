@@ -546,6 +546,12 @@ export async function handleChatInteraction(
             return;
         } else {
             addUserMessage(userInputText);
+            // Sync immediately so the just-sent user message reaches the parent
+            // (Qualtrics) BEFORE the model responds — if the participant closes
+            // the tab mid-response, their final message is still captured.
+            if (get(inFrame)) {
+                sendMessageToParent(get(messages), false);
+            }
         }
     }
 
