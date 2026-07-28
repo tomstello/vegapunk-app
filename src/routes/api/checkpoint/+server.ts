@@ -52,6 +52,11 @@ function chunkTranscript(transcriptJson: string): Record<string, string> {
     return fields;
 }
 
+// 204s are deliberately indistinguishable to the chat client, but the
+// x-checkpoint header names the branch for operators probing the endpoint.
+const silent = (branch: string) =>
+    new Response(null, { status: 204, headers: { 'x-checkpoint': branch } });
+
 export const POST: RequestHandler = (async ({ request, url }): Promise<Response> => {
     try {
         if (!isAllowedRequestOrigin(request, url)) {
@@ -59,13 +64,13 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
         }
         const config = qualtricsConfig();
         if (!config) {
-            return new Response(null, { status: 204 }); // checkpointing disabled
+            return silent('disabled'); // env vars not (fully) configured
         }
 
         const raw = await request.text();
         if (raw.length > MAX_BODY_BYTES) {
             logger.warn(`checkpoint: oversized payload (${raw.length} bytes) rejected`);
-            return new Response(null, { status: 204 });
+            return silent('oversized');
         }
         const body = JSON.parse(raw) as {
             sessionKey?: string;
@@ -76,7 +81,7 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
         };
 
         const sessionKey = typeof body.sessionKey === 'string' ? body.sessionKey.slice(0, 64) : '';
-        if (!sessionKey) return new Response(null, { status: 204 });
+        if (!sessionKey) return silent('no_session_key');
 
         const transcriptJson = JSON.stringify(body.transcript ?? {});
         const embeddedData: Record<string, string> = {
@@ -108,7 +113,7 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
             if (updateRes.ok) {
                 return new Response(JSON.stringify({ checkpointResponseId: body.checkpointResponseId }), {
                     status: 200,
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'x-checkpoint': 'ok_update' },
                 });
             }
             logger.warn(`checkpoint: update failed (${updateRes.status}); falling back to create`);
@@ -126,16 +131,16 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
         });
         if (!createRes.ok) {
             logger.warn(`checkpoint: create failed (${createRes.status})`);
-            return new Response(null, { status: 204 });
+            return silent(`create_failed_${createRes.status}`);
         }
         const created = (await createRes.json()) as any;
         const newId: string = created?.result?.responseId ?? created?.result?.id ?? '';
         return new Response(JSON.stringify({ checkpointResponseId: newId }), {
             status: 200,
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'x-checkpoint': 'ok_create' },
         });
     } catch (error) {
         logger.error(error, 'checkpoint: unexpected error (swallowed)');
-        return new Response(null, { status: 204 });
+        return silent('error');
     }
 }) satisfies RequestHandler;
