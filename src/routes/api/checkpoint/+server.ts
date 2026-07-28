@@ -38,15 +38,22 @@ type QualtricsConfig =
 
 const qualtricsConfig = (): QualtricsConfig => {
     // Normalize aggressively: dashboard pastes arrive with stray whitespace,
-    // and datacenter is often pasted as a hostname or URL. Accept "yul1",
+    // wrapping quotes (straight or curly, e.g. copied out of a chat/document),
+    // and invisible characters (zero-width spaces, NBSP); datacenter is often
+    // pasted as a hostname or URL. Accept all of it: "yul1",
     // "yul1.qualtrics.com", or "https://yul1.qualtrics.com/..." equally.
-    const token = (env.QUALTRICS_API_TOKEN ?? '').trim();
-    const datacenter = (env.QUALTRICS_DATACENTER ?? '')
-        .trim()
+    const dequote = (s: string) =>
+        s
+            .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '') // zero-width chars, BOM, NBSP
+            .trim()
+            .replace(/^["'\u2018\u2019\u201C\u201D]+|["'\u2018\u2019\u201C\u201D]+$/g, '') // wrapping quotes, straight or curly
+            .trim();
+    const token = dequote(env.QUALTRICS_API_TOKEN ?? '');
+    const datacenter = dequote(env.QUALTRICS_DATACENTER ?? '')
         .replace(/^https?:\/\//, '')
         .split('/')[0]
         .split('.')[0];
-    const surveyId = (env.QUALTRICS_CHECKPOINT_SURVEY_ID ?? '').trim();
+    const surveyId = dequote(env.QUALTRICS_CHECKPOINT_SURVEY_ID ?? '');
     if (!token || !datacenter || !surveyId) return null;
     if (/[^\x21-\x7e]/.test(token)) return { ok: false, reason: 'bad_token_value' };
     if (!/^[A-Za-z0-9-]+$/.test(datacenter)) return { ok: false, reason: 'bad_datacenter' };
