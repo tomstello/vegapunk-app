@@ -31,7 +31,12 @@ const ED_CHUNK_SIZE = 12000;
 const MAX_ED_CHUNKS = 10;
 const MAX_BODY_BYTES = 250_000; // transcript JSON is ~40k worst case; refuse absurd payloads
 
-const qualtricsConfig = () => {
+type QualtricsConfig =
+    | { ok: true; token: string; surveyId: string; base: string }
+    | { ok: false; reason: string }
+    | null;
+
+const qualtricsConfig = (): QualtricsConfig => {
     // Normalize aggressively: dashboard pastes arrive with stray whitespace,
     // and datacenter is often pasted as a hostname or URL. Accept "yul1",
     // "yul1.qualtrics.com", or "https://yul1.qualtrics.com/..." equally.
@@ -43,10 +48,10 @@ const qualtricsConfig = () => {
         .split('.')[0];
     const surveyId = (env.QUALTRICS_CHECKPOINT_SURVEY_ID ?? '').trim();
     if (!token || !datacenter || !surveyId) return null;
-    if (/[^\x21-\x7e]/.test(token)) return { invalid: 'bad_token_value' as const };
-    if (!/^[A-Za-z0-9-]+$/.test(datacenter)) return { invalid: 'bad_datacenter' as const };
-    if (!/^SV_[A-Za-z0-9]+$/.test(surveyId)) return { invalid: 'bad_survey_id' as const };
-    return { token, datacenter, surveyId, base: `https://${datacenter}.qualtrics.com/API/v3` };
+    if (/[^\x21-\x7e]/.test(token)) return { ok: false, reason: 'bad_token_value' };
+    if (!/^[A-Za-z0-9-]+$/.test(datacenter)) return { ok: false, reason: 'bad_datacenter' };
+    if (!/^SV_[A-Za-z0-9]+$/.test(surveyId)) return { ok: false, reason: 'bad_survey_id' };
+    return { ok: true, token, surveyId, base: `https://${datacenter}.qualtrics.com/API/v3` };
 };
 
 function chunkTranscript(transcriptJson: string): Record<string, string> {
@@ -76,12 +81,10 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
         if (!config) {
             return silent('disabled'); // env vars not (fully) configured
         }
-        const invalidReason = (config as { invalid?: string }).invalid;
-        if (invalidReason) {
-            logger.warn(`checkpoint: invalid config (${invalidReason})`);
-            return silent(invalidReason);
+        if (!config.ok) {
+            logger.warn(`checkpoint: invalid config (${config.reason})`);
+            return silent(config.reason);
         }
-        if (!('base' in config)) return silent('disabled'); // type guard; unreachable
 
         const raw = await request.text();
         if (raw.length > MAX_BODY_BYTES) {
