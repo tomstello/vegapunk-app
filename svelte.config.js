@@ -13,7 +13,7 @@ const config = {
 		// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
 		// See https://kit.svelte.dev/docs/adapters for more information about adapters.
 		// https://vercel.com/docs/functions/configuring-functions/duration
-		adapter: adapter({ maxDuration: 300 })
+		adapter: adapter({ maxDuration: 300, runtime: 'nodejs22.x' })
 	}
 };
 
