@@ -72,12 +72,22 @@ export interface Appearance {
     showInputElement: boolean;
 }
 
+// Join keys for transcript checkpointing: minted by the survey page and
+// echoed into every checkpoint row so sidecar transcripts can be matched to
+// the participant's main survey response. Contains no personal information.
+export interface SessionInfo {
+    sessionKey: string;
+    responseId: string;
+    condition: string;
+}
+
 export interface ChatParamsType {
     model: Model;
     study: Study;
     initialMessages: ChatMessageType[];
     ui: UI;
     appearance: Appearance;
+    session: SessionInfo;
     appURL_: string;
 }
 
@@ -109,6 +119,11 @@ export const chatParams = writable<ChatParamsType>({
         sanitize: true
     },
     initialMessages: [],
+    session: {
+        sessionKey: "",
+        responseId: "",
+        condition: ""
+    },
     ui: {
         stream: false,
         streamThrottleRate: 0,

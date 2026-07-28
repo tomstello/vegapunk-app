@@ -24,6 +24,7 @@
 		isInFrame,
 		isLoaded,
 		noAPIKeyProvided,
+		postCheckpoint,
 		scrolledUponSubmit,
 		scrollToBottom,
 		sendMessageToParent,
@@ -100,6 +101,7 @@
 		function flushToParent() {
 			if ($inFrame && $messages.length > 0) {
 				sendMessageToParent($messages, false);
+				postCheckpoint("exit_flush", true); // keepalive: survives page teardown
 			}
 		}
 		function handleVisibilityChange() {

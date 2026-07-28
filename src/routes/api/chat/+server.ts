@@ -1,5 +1,4 @@
-import { dev } from '$app/environment';
-import { env } from '$env/dynamic/private';
+import { isAllowedRequestOrigin } from '$lib/server/requestOrigin';
 import type { ChatMessageType, ChatParamsType } from '$lib/chatParams';
 import { logger } from '$lib/logger';
 import { processMessages } from '$lib/messages';
@@ -46,40 +45,8 @@ const ChatRequestSchema = z.object({
 
 // The encrypted API key ciphertext is public (it ships inside the survey page's
 // JavaScript), so this endpoint must not be callable by arbitrary parties or the
-// study's API budget can be spent by anyone. Legitimate requests come from this
-// app's own pages — the chat UI runs in an iframe served by this deployment and
-// fetches its own /api/chat — so browsers send an Origin (or at least Referer)
-// header matching the deployment itself. Extra origins (e.g. preview deployments)
-// can be listed in the ALLOWED_REQUEST_ORIGINS env var, comma-separated.
-// Requests with neither header (curl, scripts) are rejected outside dev mode.
-// NOTE: this raises the bar (blocks cross-site browser calls and naive scripts);
-// a non-browser client can still forge headers, so keep per-key spend limits and
-// ZDR/provider guardrails on the OpenRouter account as the backstop.
-function isAllowedRequestOrigin(request: Request, requestUrl: URL): boolean {
-    if (dev) return true; // local development
-
-    const extraAllowed = new Set(
-        (env.ALLOWED_REQUEST_ORIGINS ?? '')
-            .split(',')
-            .map((s) => s.trim().replace(/\/+$/, ''))
-            .filter(Boolean)
-    );
-
-    const headerToOrigin = (value: string | null): string | null => {
-        if (!value) return null;
-        try {
-            return new URL(value).origin; // Referer carries a full URL; reduce to origin
-        } catch {
-            return null;
-        }
-    };
-
-    const origin = headerToOrigin(request.headers.get('origin'))
-        ?? headerToOrigin(request.headers.get('referer'));
-    if (!origin) return false;
-
-    return origin === requestUrl.origin || extraAllowed.has(origin);
-}
+// study's API budget can be spent by anyone. Origin gating lives in
+// $lib/server/requestOrigin (shared with /api/checkpoint).
 
 export const POST: RequestHandler = (async ({ request, url }): Promise<Response> => {
     console.log("\n\n\n\n\n")

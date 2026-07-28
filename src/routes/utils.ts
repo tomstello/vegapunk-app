@@ -237,32 +237,7 @@ function prepareParentMessage(
     nextSection: boolean,
 ): string {
 
-    // Save the chat configuration alongside the transcript for research
-    // provenance (exactly which model/settings served this participant).
-    // initialMessages are dropped to save space (the transcript already
-    // contains them) and the encrypted API credential is redacted — it is
-    // not data and does not belong in survey responses.
-    const { initialMessages: _initialMessages, ...chatParamsClone } = structuredClone(get(chatParams));
-    chatParamsClone.model = { ...chatParamsClone.model, apiKeyEncrypted: "[redacted]" };
-
-    let messageForParent: { messages: ChatMessageType[], userAgentInfo: UserAgentInfoType, thumbs: any[], highlightedStrings: string[], messageInfo: MessageInfoType, nextSection: boolean, chatParams: any } = {
-        messages: [],
-        userAgentInfo: get(userAgentInfo).client,
-        thumbs: get(thumbs),
-        highlightedStrings: get(highlightedStrings),
-        messageInfo: get(messageInfo),
-        nextSection,
-        chatParams: chatParamsClone,
-    };
-
-    let firstMessageTime = new Date(messages[0].createdAt || Date.now());
-    let chatHistoryProcessed: any[] = [];
-    messages.forEach((message, idx: number) => {
-        const messageTime = new Date(message.createdAt || Date.now());
-        const timeElapsedInSeconds = (messageTime.getTime() - firstMessageTime.getTime()) / 1000;
-        chatHistoryProcessed.push({ role: message.role, content: message.content, createdAt: timeElapsedInSeconds, id: idx })
-    });
-    messageForParent.messages = chatHistoryProcessed;
+    let messageForParent = buildParentPayload(messages, nextSection);
 
     // stringify messageForParent and split into smaller chunks
     let messageForParentString = JSON.stringify(messageForParent);
@@ -280,6 +255,37 @@ function prepareParentMessage(
 
 
 
+// Build the transcript payload shared by the parent postMessage sync and the
+// checkpoint relay. The chat configuration rides along for research
+// provenance (exactly which model/settings served this participant);
+// initialMessages are dropped to save space (the transcript already contains
+// them) and the encrypted API credential is redacted — it is not data and
+// does not belong in survey responses.
+function buildParentPayload(messages: ChatMessageType[], nextSection: boolean) {
+    const { initialMessages: _initialMessages, ...chatParamsClone } = structuredClone(get(chatParams));
+    chatParamsClone.model = { ...chatParamsClone.model, apiKeyEncrypted: "[redacted]" };
+
+    let payload: { messages: any[], userAgentInfo: UserAgentInfoType, thumbs: any[], highlightedStrings: string[], messageInfo: MessageInfoType, nextSection: boolean, chatParams: any } = {
+        messages: [],
+        userAgentInfo: get(userAgentInfo).client,
+        thumbs: get(thumbs),
+        highlightedStrings: get(highlightedStrings),
+        messageInfo: get(messageInfo),
+        nextSection,
+        chatParams: chatParamsClone,
+    };
+
+    let firstMessageTime = new Date(messages[0].createdAt || Date.now());
+    let chatHistoryProcessed: any[] = [];
+    messages.forEach((message, idx: number) => {
+        const messageTime = new Date(message.createdAt || Date.now());
+        const timeElapsedInSeconds = (messageTime.getTime() - firstMessageTime.getTime()) / 1000;
+        chatHistoryProcessed.push({ role: message.role, content: message.content, createdAt: timeElapsedInSeconds, id: idx })
+    });
+    payload.messages = chatHistoryProcessed;
+    return payload;
+}
+
 export function sendMessageToParent(
     messages: ChatMessageType[],
     nextSection: boolean,
@@ -287,6 +293,52 @@ export function sendMessageToParent(
     if (messages.length === 0) return;  // no messages to send to parent
     let parentMessage = prepareParentMessage(messages, nextSection);
     window.parent.postMessage(parentMessage, "*");
+}
+
+// ---------------------------------------------------------------------------
+// Transcript checkpointing ("silent backup"): after each event the transcript
+// is also POSTed to this deployment's /api/checkpoint, which relays it into a
+// dedicated Qualtrics checkpoint survey. Guarantees a server-side copy even
+// if the tab is frozen/killed before any survey page submits.
+// Fail-silent: errors never surface to the participant or affect the chat.
+// Calls are serialized so create-then-update ordering is preserved.
+// ---------------------------------------------------------------------------
+let checkpointResponseId: string = "";
+let checkpointQueue: Promise<void> = Promise.resolve();
+
+export function postCheckpoint(reasonHint: string, useKeepalive: boolean = false) {
+    if (!get(inFrame)) return;
+    const session = get(chatParams).session;
+    if (!session || !session.sessionKey) return; // no join key -> checkpointing not configured
+    const msgs = get(messages);
+    if (msgs.length === 0) return;
+
+    const body = JSON.stringify({
+        sessionKey: session.sessionKey,
+        checkpointResponseId,
+        session,
+        transcript: buildParentPayload(msgs, false),
+        reasonHint,
+    });
+
+    checkpointQueue = checkpointQueue.then(async () => {
+        try {
+            const res = await fetch("/api/checkpoint", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body,
+                ...(useKeepalive ? { keepalive: true } : {}),
+            });
+            if (res.status === 200) {
+                const data = await res.json();
+                if (data && typeof data.checkpointResponseId === "string") {
+                    checkpointResponseId = data.checkpointResponseId;
+                }
+            }
+        } catch (e) {
+            console.log("checkpoint failed (ignored):", e);
+        }
+    }).catch(() => { /* keep the queue alive */ });
 }
 
 // Throttled "the participant is typing" signal to the parent (Qualtrics), so
@@ -325,6 +377,7 @@ export function handlePostChat(
     if (get(inFrame)) {
         console.log("Received AI response. Message parent.");
         sendMessageToParent(allMessages, nextSection);
+        postCheckpoint(nextSection ? "chat_complete" : "exchange_complete");
     } else {
         console.log("Received AI response.");
     }
@@ -563,6 +616,7 @@ export async function handleChatInteraction(
             // the tab mid-response, their final message is still captured.
             if (get(inFrame)) {
                 sendMessageToParent(get(messages), false);
+                postCheckpoint("user_message");
             }
         }
     }
