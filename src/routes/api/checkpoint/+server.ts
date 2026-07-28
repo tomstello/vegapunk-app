@@ -32,10 +32,20 @@ const MAX_ED_CHUNKS = 10;
 const MAX_BODY_BYTES = 250_000; // transcript JSON is ~40k worst case; refuse absurd payloads
 
 const qualtricsConfig = () => {
-    const token = env.QUALTRICS_API_TOKEN;
-    const datacenter = env.QUALTRICS_DATACENTER; // e.g. "ca1"
-    const surveyId = env.QUALTRICS_CHECKPOINT_SURVEY_ID; // e.g. "SV_..."
+    // Normalize aggressively: dashboard pastes arrive with stray whitespace,
+    // and datacenter is often pasted as a hostname or URL. Accept "yul1",
+    // "yul1.qualtrics.com", or "https://yul1.qualtrics.com/..." equally.
+    const token = (env.QUALTRICS_API_TOKEN ?? '').trim();
+    const datacenter = (env.QUALTRICS_DATACENTER ?? '')
+        .trim()
+        .replace(/^https?:\/\//, '')
+        .split('/')[0]
+        .split('.')[0];
+    const surveyId = (env.QUALTRICS_CHECKPOINT_SURVEY_ID ?? '').trim();
     if (!token || !datacenter || !surveyId) return null;
+    if (/[^\x21-\x7e]/.test(token)) return { invalid: 'bad_token_value' as const };
+    if (!/^[A-Za-z0-9-]+$/.test(datacenter)) return { invalid: 'bad_datacenter' as const };
+    if (!/^SV_[A-Za-z0-9]+$/.test(surveyId)) return { invalid: 'bad_survey_id' as const };
     return { token, datacenter, surveyId, base: `https://${datacenter}.qualtrics.com/API/v3` };
 };
 
@@ -66,6 +76,12 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
         if (!config) {
             return silent('disabled'); // env vars not (fully) configured
         }
+        const invalidReason = (config as { invalid?: string }).invalid;
+        if (invalidReason) {
+            logger.warn(`checkpoint: invalid config (${invalidReason})`);
+            return silent(invalidReason);
+        }
+        if (!('base' in config)) return silent('disabled'); // type guard; unreachable
 
         const raw = await request.text();
         if (raw.length > MAX_BODY_BYTES) {
@@ -102,21 +118,26 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
         };
 
         if (body.checkpointResponseId && /^R_[A-Za-z0-9]+$/.test(body.checkpointResponseId)) {
-            const updateRes = await fetch(
+            let updateRes: Response | null = null;
+            try {
+                updateRes = await fetch(
                 `${config.base}/responses/${body.checkpointResponseId}`,
                 {
                     method: 'PUT',
                     headers,
                     body: JSON.stringify({ surveyId: config.surveyId, embeddedData }),
                 }
-            );
-            if (updateRes.ok) {
+                );
+            } catch (e) {
+                logger.warn(`checkpoint: update threw (${(e as Error)?.message}); falling back to create`);
+            }
+            if (updateRes && updateRes.ok) {
                 return new Response(JSON.stringify({ checkpointResponseId: body.checkpointResponseId }), {
                     status: 200,
                     headers: { 'Content-Type': 'application/json', 'x-checkpoint': 'ok_update' },
                 });
             }
-            logger.warn(`checkpoint: update failed (${updateRes.status}); falling back to create`);
+            if (updateRes) logger.warn(`checkpoint: update failed (${updateRes.status}); falling back to create`);
         }
 
         // Verified against the live API (2026-07-28): embedded-data fields go
@@ -124,11 +145,17 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
         // silently dropped by the create endpoint. (The update endpoint, by
         // contrast, takes a top-level `embeddedData` object. Asymmetric, but
         // both shapes below are empirically confirmed.)
-        const createRes = await fetch(`${config.base}/surveys/${config.surveyId}/responses`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ values: { ...embeddedData, tsFirst: new Date().toISOString() } }),
-        });
+        let createRes: Response;
+        try {
+            createRes = await fetch(`${config.base}/surveys/${config.surveyId}/responses`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ values: { ...embeddedData, tsFirst: new Date().toISOString() } }),
+            });
+        } catch (e) {
+            logger.warn(`checkpoint: create threw (${(e as Error)?.message})`);
+            return silent('create_unreachable');
+        }
         if (!createRes.ok) {
             logger.warn(`checkpoint: create failed (${createRes.status})`);
             return silent(`create_failed_${createRes.status}`);
