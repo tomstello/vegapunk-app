@@ -114,10 +114,15 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
             logger.warn(`checkpoint: update failed (${updateRes.status}); falling back to create`);
         }
 
+        // Verified against the live API (2026-07-28): embedded-data fields go
+        // DIRECTLY inside `values` — a nested `embeddedData` object is
+        // silently dropped by the create endpoint. (The update endpoint, by
+        // contrast, takes a top-level `embeddedData` object. Asymmetric, but
+        // both shapes below are empirically confirmed.)
         const createRes = await fetch(`${config.base}/surveys/${config.surveyId}/responses`, {
             method: 'POST',
             headers,
-            body: JSON.stringify({ values: { embeddedData, tsFirst: new Date().toISOString() } }),
+            body: JSON.stringify({ values: { ...embeddedData, tsFirst: new Date().toISOString() } }),
         });
         if (!createRes.ok) {
             logger.warn(`checkpoint: create failed (${createRes.status})`);
