@@ -289,6 +289,18 @@ export function sendMessageToParent(
     window.parent.postMessage(parentMessage, "*");
 }
 
+// Throttled "the participant is typing" signal to the parent (Qualtrics), so
+// an abandonment/inactivity timer on the parent page can distinguish a slow
+// typer from a closed or walked-away-from tab. Carries no content.
+let lastActivityPingAt = 0;
+export function postActivityPing() {
+    if (!get(inFrame)) return;
+    const now = Date.now();
+    if (now - lastActivityPingAt < 15000) return;
+    lastActivityPingAt = now;
+    window.parent.postMessage(JSON.stringify({ activityPing: true }), "*");
+}
+
 
 export function handlePostChat(
     allMessages: ChatMessageType[],

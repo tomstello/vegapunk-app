@@ -20,6 +20,7 @@
         receivedParentMessage,
         scrolledUponSubmit,
         handleChatInteraction,
+        postActivityPing,
         sendMessageToParent,
         timeStart,
         userSentMessage,
@@ -97,6 +98,7 @@
             disabled={$disableInputElement}
             bind:value={$userInput}
             on:paste={preventPaste}
+            on:input={postActivityPing}
         />
         {#if $isAtBottom && !$isLoading}
             <button class="btn join-item rounded-r-lg" type="submit"
