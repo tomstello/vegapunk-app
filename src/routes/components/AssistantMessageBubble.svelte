@@ -1,7 +1,6 @@
 <script lang="ts">
     import type { ChatMessageType } from "$lib/chatParams";
     import { chatParams } from "$lib/chatParams";
-    import medicalAvatar from "$lib/icons/medical2.png";
     import thumbsdown from "$lib/icons/thumbsdown.svg";
     import thumbsup from "$lib/icons/thumbsup.svg";
     import { isLoading } from "$lib/stores";
@@ -45,7 +44,6 @@
 <div class="vp-msg vp-msg-assistant">
     {#if $chatParams.appearance.showBotAvatar}
         <div class="vp-label">
-            <span class="vp-chip"><img alt="" src={medicalAvatar} /></span>
             <span class="vp-label-text">Assistant</span>
         </div>
     {/if}

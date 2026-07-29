@@ -9,7 +9,7 @@
      Same component, same DOM order — restyling only. Runtime bubbleUser*
      classes still pass through onto the heading text. -->
 <div class="vp-entry">
-	<div class="vp-entry-kicker">YOUR QUESTION</div>
+	<div class="vp-entry-kicker">Your question</div>
 	<div
 		class={`vp-entry-q ${$chatParams.appearance.bubbleUserBackground} ${$chatParams.appearance.bubbleUserTextColor}`}
 	>
