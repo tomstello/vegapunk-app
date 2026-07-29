@@ -8,6 +8,7 @@
 	import { isLoading } from "$lib/stores";
 	import { afterUpdate, onMount } from "svelte";
 	import Counter from "./components/Counter.svelte";
+	import Header from "./components/Header.svelte";
 	import InputForm from "./components/InputForm.svelte";
 	import Messages from "./components/Messages.svelte";
 	import ModalApiKey from "./components/ModalAPIKey.svelte";
@@ -124,19 +125,22 @@
 
 {#if $isLoaded}
 	<main class="h-svh flex flex-col">
+		<Header {nextSection} />
 		<Counter />
 
 		<div
 			id="scrollElement"
 			bind:this={scrollElement}
 			on:scroll={handleScroll}
-			class="w-full p-3 xs:p-8 xs:pl-12 xs:pr-12 pb-1 pt-3 mx-auto overflow-y-scroll no-scrollbar scroll-smooth mt-auto h-svh"
+			role="log"
+			aria-live="polite"
+			class="w-full max-w-2xl mx-auto flex-1 min-h-0 overflow-y-scroll no-scrollbar scroll-smooth px-4 pt-3 pb-1 sm:px-6"
 		>
 			<Messages />
 		</div>
 
 		<div
-			class={`relative w-[95%] md:w-[80%] pb-5 sm:pb-20 mx-auto grid grid-rows-[max-content_1fr]`}
+			class={`relative w-full max-w-2xl px-3 sm:px-6 mx-auto grid grid-rows-[max-content_1fr]`}
 		>
 			{#if !$isAtBottom}
 				<ScrollToBottomButton {scrollElement} />

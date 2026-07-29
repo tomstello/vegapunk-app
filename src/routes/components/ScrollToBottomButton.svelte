@@ -4,10 +4,11 @@
 	export let scrollElement: HTMLDivElement;
 </script>
 
-<div class="toast toast-center absolute top-0 -translate-y-12">
+<div class="absolute inset-x-0 top-0 -translate-y-14 flex justify-center z-10">
 	<button
 		on:click={() => scrollToBottom(scrollElement)}
-		class="btn btn-sm btn-circle"
-		><img src={down} alt="scroll down" class="w-7 h-7" /></button
+		class="vp-pill"
+		aria-label="Scroll to the newest messages"
+		><img src={down} alt="" class="w-6 h-6" /></button
 	>
 </div>

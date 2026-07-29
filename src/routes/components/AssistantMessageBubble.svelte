@@ -13,74 +13,76 @@
     export let handleClickThumbsdown: (message: any) => void;
     export let nMessages: number;
 
-    let assistantClass = `prose chat-bubble max-w-[90%] ${$chatParams.appearance.showBotAvatar ? "ml-10" : "ml-0"} ${$chatParams.appearance.bubbleAssistantTextColor} ${$chatParams.appearance.bubbleAssistantBackground}`;
-    let thumbsUpClass = `btn btn-xs ${$chatParams.appearance.voteButtonOpacity}`;
-    let thumbsDownClass = `btn btn-xs  ${$chatParams.appearance.voteButtonOpacity}`;
-    let highlightClass = "border-2 border-sky-500 hover:border-sky-500";
     let thumb: string = "";
+    let votedUp = false;
+    let votedDown = false;
 
-    function handleClick(thumb: string) {
-        if (thumb === "up") {
+    function handleClick(t: string) {
+        if (t === "up") {
             handleClickThumbsup(message);
-            thumbsDownClass = thumbsDownClass.replace(highlightClass, "");
-            thumbsUpClass = `${thumbsUpClass} ${highlightClass}`;
-        } else if (thumb === "down") {
+            votedUp = true;
+            votedDown = false;
+        } else if (t === "down") {
             handleClickThumbsdown(message);
-            thumbsUpClass = thumbsUpClass.replace(highlightClass, "");
-            thumbsDownClass = `${thumbsDownClass} ${highlightClass}`;
+            votedDown = true;
+            votedUp = false;
         }
     }
     $: handleClick(thumb);
+
+    $: isLast = index === nMessages - 1;
+    // dots before the first token arrives (streaming), and for the whole wait
+    // when not streaming (the empty placeholder message added by Messages.svelte)
+    $: waiting =
+        message.content === "" ||
+        (!$chatParams.ui.stream && $isLoading && isLast);
+    // caret at the end of the growing text while streaming
+    $: streaming =
+        $chatParams.ui.stream && $isLoading && isLast && message.content !== "";
+    $: bodyClass = `vp-md ${message.isInitial ? "vp-md-initial" : ""} ${streaming ? "vp-streaming" : ""} ${$chatParams.appearance.bubbleAssistantTextColor} ${$chatParams.appearance.bubbleAssistantBackground}`;
 </script>
 
-<div class="chat chat-start relative">
+<div class="vp-msg vp-msg-assistant">
     {#if $chatParams.appearance.showBotAvatar}
-        <div class="chat-image avatar indicator absolute top-2">
-            {#if ($isLoading && index === nMessages - 1) || message.content === ""}
-                {#if $chatParams.ui.stream}
-                    <span
-                        class="loading loading-dots loading-sm indicator-item badge badge-warning text-white mr-1 mt-2 bg-[#6766db]"
-                    >
-                    </span>
-                {:else}
-                    <span
-                        class="loading loading-dots loading-sm indicator-item badge badge-warning text-white mr-1 mt-2 bg-[#a9e415]"
-                    >
-                    </span>
-                {/if}
-            {/if}
-            <div class="w-12 mt-2 rounded-full">
-                <img alt="Assistant avatar" src={medicalAvatar} />
-            </div>
+        <div class="vp-label">
+            <span class="vp-chip"><img alt="" src={medicalAvatar} /></span>
+            <span class="vp-label-text">Assistant</span>
         </div>
     {/if}
 
-    {#if $chatParams.ui.stream || !$isLoading || index < nMessages - 1}
-        <div class={assistantClass}>
+    {#if waiting}
+        <div class="vp-typing" role="status" aria-label="The assistant is answering">
+            <span></span><span></span><span></span>
+            <em>Answering…</em>
+        </div>
+    {:else}
+        <div class={bodyClass}>
             {@html marked(message.content)}
         </div>
-    {:else if !$chatParams.ui.stream && $isLoading && index === nMessages - 1}
-        <div class={`chat-bubble ml-10 text-black bg-white`}></div>
     {/if}
 
     {#if $chatParams.study.showVoteButtons}
         {#if index < nMessages - 1 || (index === nMessages - 1 && !$isLoading)}
-            <div class="chat-footer ml-14">
+            <div class="vp-votes">
                 <button
                     on:click|preventDefault={() => {
                         thumb = "up";
                     }}
-                    class={thumbsUpClass}
+                    aria-label="This answer was helpful"
+                    aria-pressed={votedUp}
+                    class={`vp-vote ${votedUp ? "vp-vote-active" : ""} ${$chatParams.appearance.voteButtonOpacity}`}
                 >
-                    <img class="w-5 h-5" alt="thumbsup" src={thumbsup} />
+                    <img alt="" src={thumbsup} />
                 </button>
                 <button
                     on:click|preventDefault={() => {
                         thumb = "down";
                     }}
-                    class={thumbsDownClass}
+                    aria-label="This answer was not helpful"
+                    aria-pressed={votedDown}
+                    class={`vp-vote ${votedDown ? "vp-vote-active" : ""} ${$chatParams.appearance.voteButtonOpacity}`}
                 >
-                    <img class="w-5 h-5" alt="thumbsdown" src={thumbsdown} />
+                    <img alt="" src={thumbsdown} />
                 </button>
             </div>
         {/if}

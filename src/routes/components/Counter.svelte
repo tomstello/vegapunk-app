@@ -88,10 +88,8 @@
 </script>
 
 {#if counterText}
-	<div class="fixed inset-x-0 z-10 flex justify-center">
-		<div
-			class=" bg-slate-50 shadow-sm mt-1 p-1 px-4 border rounded-xl text-xs text-slate-500"
-		>
+	<div class="fixed inset-x-0 z-10 flex justify-center pointer-events-none">
+		<div class="vp-counter">
 			{counterText}
 		</div>
 	</div>

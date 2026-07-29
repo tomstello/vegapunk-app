@@ -2,7 +2,6 @@
     import { chatParams } from "$lib/chatParams";
     import {
         messageDisplaySetting,
-        messageInfo,
         messages,
         userInput,
     } from "$lib/messages";
@@ -13,7 +12,6 @@
         continueScroll,
         countMessagesAndTime,
         disableInputElement,
-        enableSubmit,
         getScrollElement,
         inputElementOpacity,
         isAtBottom,
@@ -73,16 +71,6 @@
         isAtBottom.set(checkAtBottom(scrollElement));
     };
 
-    const stopRequest = (e: Event) => {
-        e.preventDefault();
-        sendMessageToParent($messages, nextSection);
-        isLoading.set(false);
-        messageDisplaySetting.update((x) => {
-            return { ...x, doneReading: true };
-        });
-        enableSubmit.set(false);
-    };
-
     const preventPaste = (e: Event) => {
         if ($chatParams.ui.preventPaste) {
             e.preventDefault();
@@ -90,27 +78,19 @@
     };
 </script>
 
-<form on:submit|preventDefault={submit}>
-    <div class="join flex justify-center pt-2">
-        <input
-            class={`input input-bordered join-item w-full ${$inputElementOpacity}`}
-            placeholder={$chatParams.appearance.placeHolderInputText}
-            disabled={$disableInputElement}
-            bind:value={$userInput}
-            on:paste={preventPaste}
-            on:input={postActivityPing}
-        />
-        {#if $isAtBottom && !$isLoading}
-            <button class="btn join-item rounded-r-lg" type="submit"
-                >Send</button
-            >
-        {/if}
-
-        {#if $messageInfo.nUserMessages >= $chatParams.study.allowStopAfterNUserMessages || $chatParams.study.allowStopAfterNUserMessages === 0}
-            <button
-                on:click|preventDefault={stopRequest}
-                class="btn join-item rounded-r-lg bg-slate-300">Stop</button
-            >
-        {/if}
-    </div>
+<!-- The old "Stop" button moved to Header.svelte as "End chat" (same handler). -->
+<form class="vp-inputbar" on:submit|preventDefault={submit}>
+    <label class="sr-only" for="vp-question-input">Type your question</label>
+    <input
+        id="vp-question-input"
+        class={`vp-input ${$inputElementOpacity}`}
+        placeholder={$chatParams.appearance.placeHolderInputText}
+        disabled={$disableInputElement}
+        bind:value={$userInput}
+        on:paste={preventPaste}
+        on:input={postActivityPing}
+    />
+    {#if $isAtBottom && !$isLoading}
+        <button class="vp-send" type="submit">Send</button>
+    {/if}
 </form>

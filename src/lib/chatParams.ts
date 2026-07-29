@@ -70,6 +70,8 @@ export interface Appearance {
     placeHolderInputText: string;
     endChatText: string;
     showInputElement: boolean;
+    headerTitle: string; // ADDITIVE (2026 redesign): participant-facing tool name in the header
+    showDownloadButton: boolean; // ADDITIVE: end-of-chat transcript download; OFF pending PI sign-off
 }
 
 // Join keys for transcript checkpointing: minted by the survey page and
@@ -138,14 +140,20 @@ export const chatParams = writable<ChatParamsType>({
     },
     appearance: {
         showBotAvatar: true,
-        bubbleAssistantBackground: 'bg-white',
-        bubbleAssistantTextColor: 'text-black',
-        bubbleUserBackground: 'bg-slate-800',
-        bubbleUserTextColor: 'text-white',
+        // Defaults are now EMPTY so the coherent CSS theme (app.css "paper"
+        // tokens) renders. Studies can still send any Tailwind classes here —
+        // utilities land after the component layer, so runtime knobs win.
+        // (Safelist runtime-only classes in tailwind.config.js.)
+        bubbleAssistantBackground: '',
+        bubbleAssistantTextColor: '',
+        bubbleUserBackground: '',
+        bubbleUserTextColor: '',
         voteButtonOpacity: "opacity-60",
-        placeHolderInputText: "Say something...",
+        placeHolderInputText: "Write your questions here",
         endChatText: "Scroll down and proceed to the next section.",
         showInputElement: true,
+        headerTitle: "Vaccine Questions",
+        showDownloadButton: false,
     },
     appURL_: ""
 });

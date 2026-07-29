@@ -128,7 +128,12 @@
 		if (cleanHref === null) {
 			return text;
 		}
-		let out = '<a target="_blank" href="' + cleanHref + '"';
+		// rel added so links opened from inside the iframe can't reach back
+		// (safe-open requirement); presentation-only change
+		let out =
+			'<a target="_blank" rel="noopener noreferrer" href="' +
+			cleanHref +
+			'"';
 		if (title) {
 			out += ' title="' + title + '"';
 		}
