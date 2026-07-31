@@ -38,6 +38,7 @@
 		sendMessageUntilReceived,
 		stickToBottom,
 		toggleInputElementOpacity,
+		userSentMessage,
 	} from "./utils";
 
 	let nextSection: boolean = false;
@@ -47,12 +48,15 @@
 
 	$: if ($isLoading) toggleInputElementOpacity();
 
-	// Suggested-question chips: shown until the participant sends anything.
+	// Suggested-question chips: first screen ONLY. userSentMessage latches
+	// true at the first submit and never resets, so the chips can never
+	// reappear later in the conversation regardless of message-store state.
 	$: nUserMessagesSent = $messages.filter(
 		(m) => m.role === "user" && !m.isInitial,
 	).length;
 	$: showChips =
 		$chatParams.ui.suggestedQuestions.length > 0 &&
+		!$userSentMessage &&
 		nUserMessagesSent === 0 &&
 		!$isLoading;
 
