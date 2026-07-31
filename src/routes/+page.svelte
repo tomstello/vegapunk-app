@@ -14,11 +14,17 @@
 	import ModalApiKey from "./components/ModalAPIKey.svelte";
 	import ScrollProceedNextSection from "./components/ScrollProceedNextSection.svelte";
 	import ScrollToBottomButton from "./components/ScrollToBottomButton.svelte";
+	import SuggestedQuestions from "./components/SuggestedQuestions.svelte";
 	import {
+		checkAtBottom,
 		countTimeElapsed,
 		enableSubmit,
+		followStream,
 		getUserAgentInfo,
 		handleScroll,
+		handleTouchMove,
+		handleTouchStart,
+		handleWheel,
 		inFrame,
 		initializeChat,
 		isAtBottom,
@@ -30,29 +36,54 @@
 		scrollToBottom,
 		sendMessageToParent,
 		sendMessageUntilReceived,
+		stickToBottom,
 		toggleInputElementOpacity,
 	} from "./utils";
 
 	let nextSection: boolean = false;
 	let scrollElement: HTMLDivElement;
+	let inputForm: InputForm;
 	let nMessages = $messageInfo.nTotalMessages;
 
 	$: if ($isLoading) toggleInputElementOpacity();
+
+	// Suggested-question chips: shown until the participant sends anything.
+	$: nUserMessagesSent = $messages.filter(
+		(m) => m.role === "user" && !m.isInitial,
+	).length;
+	$: showChips =
+		$chatParams.ui.suggestedQuestions.length > 0 &&
+		nUserMessagesSent === 0 &&
+		!$isLoading;
+
+	const pickSuggestion = (question: string) => {
+		inputForm?.submitText(question);
+		// keep focus on the transcript (aria-live log) so the answer is
+		// announced and the phone keyboard doesn't pop over the stream
+		document
+			.getElementById("scrollElement")
+			?.focus({ preventScroll: true });
+	};
 
 	// https://learn.svelte.dev/tutorial/update
 	afterUpdate(() => {
 		// scroll when there are new messages
 		if (scrollElement && $messageInfo.nTotalMessages > nMessages) {
-			// scroll 150px when streaming or when there are more than nInitialMessages + 2 messages (i.e., more than 2 message has been added since the initial messages)
 			nMessages = $messageInfo.nTotalMessages;
-			if (
-				$chatParams.ui.stream ||
-				$messages.length > $messageInfo.nInitialMessages + 1
-			) {
-				scrollElement.scrollBy(0, 150);
+			if ($messages.length <= $messageInfo.nInitialMessages) {
+				// initial render: nudge 1px purely to fire a scroll event so
+				// isAtBottom gets computed — never scroll the FAQ out of view
+				scrollElement.scrollBy(0, 1);
+			} else if ($followStream || checkAtBottom(scrollElement)) {
+				if ($chatParams.ui.stream) {
+					stickToBottom(scrollElement);
+				} else {
+					// non-stream: partial reveal of a full answer
+					scrollElement.scrollBy(0, 150);
+				}
 			} else {
-				// scroll a bit when there are no messages or when there are only nInitialMessages messages
-				// to ensure the scroll event is triggered and the app can check if the scroll is at the bottom
+				// reader has scrolled up: don't yank, just re-trigger the
+				// scroll evaluation so the scroll-down button can appear
 				scrollElement.scrollBy(0, 1);
 			}
 		}
@@ -132,8 +163,12 @@
 			id="scrollElement"
 			bind:this={scrollElement}
 			on:scroll={handleScroll}
+			on:wheel|passive={handleWheel}
+			on:touchstart|passive={handleTouchStart}
+			on:touchmove|passive={handleTouchMove}
 			role="log"
 			aria-live="polite"
+			tabindex="-1"
 			class="w-full max-w-2xl mx-auto flex-1 min-h-0 overflow-y-scroll no-scrollbar scroll-smooth px-4 pt-3 pb-1 sm:px-6"
 		>
 			<Messages />
@@ -142,13 +177,16 @@
 		<div
 			class={`relative w-full max-w-2xl px-3 sm:px-6 mx-auto grid grid-rows-[max-content_1fr]`}
 		>
-			{#if !$isAtBottom}
+			{#if !$isAtBottom && !($isLoading && $followStream)}
 				<ScrollToBottomButton {scrollElement} />
 			{/if}
 
 			{#if $chatParams.appearance.showInputElement}
 				{#if $enableSubmit}
-					<InputForm {scrollElement} {nextSection} />
+					{#if showChips}
+						<SuggestedQuestions onPick={pickSuggestion} />
+					{/if}
+					<InputForm bind:this={inputForm} {scrollElement} {nextSection} />
 				{:else if !$enableSubmit && nextSection && $messageDisplaySetting.doneReading}
 					<ScrollProceedNextSection />
 				{/if}

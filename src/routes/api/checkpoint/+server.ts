@@ -79,6 +79,24 @@ function chunkTranscript(transcriptJson: string): Record<string, string> {
 const silent = (branch: string) =>
     new Response(null, { status: 204, headers: { 'x-checkpoint': branch } });
 
+// One bounded retry on throttling/transient upstream errors. Launch-window
+// bursts can trip the brand-level Qualtrics rate limit, and the final
+// keepalive exit-flush has no later attempt to fall back on — a single
+// jittered retry recovers most of those without meaningfully extending the
+// function's lifetime.
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+async function qualtricsFetch(input: string, init: RequestInit): Promise<Response> {
+    try {
+        const first = await fetch(input, init);
+        if (!RETRYABLE_STATUS.has(first.status)) return first;
+        logger.warn(`checkpoint: upstream ${first.status}; retrying once`);
+    } catch {
+        logger.warn('checkpoint: upstream fetch threw; retrying once');
+    }
+    await new Promise((r) => setTimeout(r, 350 + Math.random() * 250));
+    return fetch(input, init); // a second failure propagates to the caller's handling
+}
+
 export const POST: RequestHandler = (async ({ request, url }): Promise<Response> => {
     try {
         if (!isAllowedRequestOrigin(request, url)) {
@@ -130,7 +148,7 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
         if (body.checkpointResponseId && /^R_[A-Za-z0-9]+$/.test(body.checkpointResponseId)) {
             let updateRes: Response | null = null;
             try {
-                updateRes = await fetch(
+                updateRes = await qualtricsFetch(
                 `${config.base}/responses/${body.checkpointResponseId}`,
                 {
                     method: 'PUT',
@@ -157,7 +175,7 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
         // both shapes below are empirically confirmed.)
         let createRes: Response;
         try {
-            createRes = await fetch(`${config.base}/surveys/${config.surveyId}/responses`, {
+            createRes = await qualtricsFetch(`${config.base}/surveys/${config.surveyId}/responses`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ values: { ...embeddedData, tsFirst: new Date().toISOString() } }),

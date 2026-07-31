@@ -79,7 +79,9 @@ export const POST: RequestHandler = (async ({ request, url }): Promise<Response>
         }
 
         logger.info(`Data for API call: ${chatParams.model.baseURL}, ${chatParams.model.name}`);
-        logger.info(`promptSystem: ${promptSystem}`)
+        // debug, not info: the full system prompt is ~14.5KB — logging it per
+        // call floods production logs at scale with no operational value
+        logger.debug(`promptSystem: ${promptSystem}`)
         logger.debug({ messages });
         logger.debug(`number of messages: ${messages.length}`);
 

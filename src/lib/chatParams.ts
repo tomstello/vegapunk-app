@@ -58,6 +58,7 @@ export interface UI {
     showSystemMessages: boolean;
     showInputBasedOnReadingTime: boolean;
     avgWordsPerSec: number;
+    suggestedQuestions: string[]; // ADDITIVE: tappable starter questions shown until the first user message
 }
 
 export interface Appearance {
@@ -136,18 +137,15 @@ export const chatParams = writable<ChatParamsType>({
         hideInitialMessages: true,
         showSystemMessages: false,
         showInputBasedOnReadingTime: false,
-        avgWordsPerSec: 12
+        avgWordsPerSec: 12,
+        suggestedQuestions: []
     },
     appearance: {
         showBotAvatar: true,
-        // Defaults are now EMPTY so the coherent CSS theme (app.css "paper"
-        // tokens) renders. Studies can still send any Tailwind classes here —
-        // utilities land after the component layer, so runtime knobs win.
-        // (Safelist runtime-only classes in tailwind.config.js.)
-        bubbleAssistantBackground: '',
-        bubbleAssistantTextColor: '',
-        bubbleUserBackground: '',
-        bubbleUserTextColor: '',
+        bubbleAssistantBackground: 'bg-white',
+        bubbleAssistantTextColor: 'text-black',
+        bubbleUserBackground: 'bg-slate-800',
+        bubbleUserTextColor: 'text-white',
         voteButtonOpacity: "opacity-60",
         placeHolderInputText: "Write your questions here",
         endChatText: "Scroll down and proceed to the next section.",

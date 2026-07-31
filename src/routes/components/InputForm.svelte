@@ -27,14 +27,13 @@
     export let scrollElement: HTMLDivElement;
     export let nextSection: boolean;
 
-    const submit = async (e: Event) => {
+    const submit = async () => {
         if ($chatParams.study.sanitize) {
             userInput.set(DOMPurify.sanitize($userInput));
         }
         if ($userInput === "") {
             return;
         }
-        e.preventDefault();
         scrolledUponSubmit.set(true); // to trigger scroll to bottom upon submit
 
         // determine if the user has sent at least one message and record the time
@@ -71,6 +70,13 @@
         isAtBottom.set(checkAtBottom(scrollElement));
     };
 
+    // Instance method for suggested-question chips: routes the tapped question
+    // through the exact same submit pipeline as typed input.
+    export const submitText = async (text: string) => {
+        userInput.set(text);
+        await submit();
+    };
+
     const preventPaste = (e: Event) => {
         if ($chatParams.ui.preventPaste) {
             e.preventDefault();
@@ -78,12 +84,15 @@
     };
 </script>
 
-<!-- The old "Stop" button moved to Header.svelte as "End chat" (same handler). -->
-<form class="vp-inputbar" on:submit|preventDefault={submit}>
+<!-- The old "Stop" button lives in Header.svelte as "End chat" (same handler). -->
+<form
+    class="flex gap-2 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+    on:submit|preventDefault={submit}
+>
     <label class="sr-only" for="vp-question-input">Type your question</label>
     <input
         id="vp-question-input"
-        class={`vp-input ${$inputElementOpacity}`}
+        class={`input input-bordered w-full text-base ${$inputElementOpacity}`}
         placeholder={$chatParams.appearance.placeHolderInputText}
         disabled={$disableInputElement}
         bind:value={$userInput}
@@ -91,6 +100,6 @@
         on:input={postActivityPing}
     />
     {#if $isAtBottom && !$isLoading}
-        <button class="vp-send" type="submit">Send</button>
+        <button class="btn" type="submit">Send</button>
     {/if}
 </form>

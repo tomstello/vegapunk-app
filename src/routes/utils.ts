@@ -25,6 +25,10 @@ export const lastScrollTop: Writable<number> = writable(0);
 // Stores for managing scroll states:
 export const continueScroll: Writable<boolean> = writable(true);
 export const isAtBottom: Writable<boolean> = writable(false);
+// Stick-to-bottom streaming: while true, new streamed content keeps the view
+// pinned to the bottom. A deliberate user scroll-up breaks it; returning to
+// the bottom (or tapping the scroll-down button) re-engages it.
+export const followStream: Writable<boolean> = writable(false);
 export const inputElementOpacity: Writable<string> = writable("opacity-100");
 export const disableInputElement: Writable<boolean> = writable(false);
 export const enableSubmit: Writable<boolean> = writable(true);
@@ -105,31 +109,61 @@ export function checkAtBottom(node: HTMLElement): boolean {
 
 export function handleScroll(e: Event) {
     const node = e.target as HTMLDivElement;
-    if (get(isLoading)) {
-        // if is loading, scroll should never be considered at bottom, so disable input element
-        isAtBottom.set(false);
+    const atBottom = checkAtBottom(node);
+    isAtBottom.set(atBottom);
+    if (atBottom) {
+        // reaching the bottom (by hand or via the button) re-engages follow
+        followStream.set(true);
         toggleInputElementOpacity();
-    } else {
-        if (checkAtBottom(node)) {
-            // if not loading and at bottom, then enable input element
-            isAtBottom.set(true);
-            toggleInputElementOpacity();
-        } else {
-            // if not loading but not at bottom, then user has scrolled up, so disable input element
-            isAtBottom.set(false);
-            inputElementOpacity.set("opacity-55");
-            disableInputElement.set(true);
-        }
+    } else if (!get(isLoading)) {
+        // scrolled up while idle: reading earlier messages, so stop following
+        // and dim/disable the input until the reader returns to the bottom
+        followStream.set(false);
+        inputElementOpacity.set("opacity-55");
+        disableInputElement.set(true);
     }
+    // While streaming, follow is only broken by the deliberate user-intent
+    // handlers below (wheel/touch) — never by programmatic scroll events.
 };
 
+// Instantly pin the view to the bottom ('auto' beats the container's CSS
+// scroll-smooth, which would lag behind a fast stream).
+export function stickToBottom(node: HTMLDivElement) {
+    node = getScrollElement(node);
+    if (!node) return;
+    node.scroll({ top: node.scrollHeight, behavior: "auto" });
+}
+
+// Deliberate user scroll-up breaks stick-to-bottom. Programmatic scrolls
+// fire scroll events but never wheel/touch events, so these are unambiguous.
+let lastTouchY: number | null = null;
+export function handleTouchStart(e: TouchEvent) {
+    lastTouchY = e.touches[0]?.clientY ?? null;
+}
+export function handleTouchMove(e: TouchEvent) {
+    const y = e.touches[0]?.clientY;
+    if (y == null || lastTouchY == null) return;
+    if (y - lastTouchY > 6) followStream.set(false); // finger moving down = scrolling up
+    lastTouchY = y;
+}
+export function handleWheel(e: WheelEvent) {
+    if (e.deltaY < 0) followStream.set(false);
+}
 
 // https://svelte.dev/repl/937a3a035a1f41178714cd7e2e21ca7a?version=3.48.0
-export const scrollToBottom = async (node: HTMLDivElement) => {
+export const scrollToBottom = (node: HTMLDivElement) => {
     node = getScrollElement(node);
-    node.scroll({ top: node.scrollHeight, behavior: "smooth" });
-    // add extra pixels to ensure fully scrolled to bottom
-    node.scrollTop = node.scrollTop += 10000;
+    if (!node) return;
+    const reduceMotion =
+        typeof window !== "undefined" &&
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    followStream.set(true);
+    node.scroll({
+        top: node.scrollHeight,
+        // jump instantly mid-stream (content is still growing) and under
+        // prefers-reduced-motion; glide only for an idle catch-up
+        behavior: reduceMotion || get(isLoading) ? "auto" : "smooth",
+    });
     isAtBottom.set(true);
 };
 
@@ -305,6 +339,7 @@ export function sendMessageToParent(
 // ---------------------------------------------------------------------------
 let checkpointResponseId: string = "";
 let checkpointQueue: Promise<void> = Promise.resolve();
+let lastRelayedTranscript: string = ""; // last transcript that reached Qualtrics (dedupe key)
 
 export function postCheckpoint(reasonHint: string, useKeepalive: boolean = false) {
     if (!get(inFrame)) return;
@@ -313,11 +348,19 @@ export function postCheckpoint(reasonHint: string, useKeepalive: boolean = false
     const msgs = get(messages);
     if (msgs.length === 0) return;
 
+    const transcript = buildParentPayload(msgs, false);
+    const transcriptKey = JSON.stringify(transcript);
+    // Mobile fires an exit flush on every app-switch/screen-lock
+    // (visibilitychange), so a participant toggling apps would re-send the
+    // same transcript repeatedly. Skip the relay when this exact transcript
+    // already reached Qualtrics; message-driven checkpoints always differ.
+    if (reasonHint === "exit_flush" && transcriptKey === lastRelayedTranscript) return;
+
     const body = JSON.stringify({
         sessionKey: session.sessionKey,
         checkpointResponseId,
         session,
-        transcript: buildParentPayload(msgs, false),
+        transcript,
         reasonHint,
     });
 
@@ -330,6 +373,7 @@ export function postCheckpoint(reasonHint: string, useKeepalive: boolean = false
                 ...(useKeepalive ? { keepalive: true } : {}),
             });
             if (res.status === 200) {
+                lastRelayedTranscript = transcriptKey;
                 const data = await res.json();
                 if (data && typeof data.checkpointResponseId === "string") {
                     checkpointResponseId = data.checkpointResponseId;
@@ -544,22 +588,42 @@ async function fetchChatResponse(stream: boolean = false) {
     let resp;
     let response: Response | undefined = undefined;
 
-    try {
-        response = await fetch("/api/chat", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                messages: get(messages),
-                chatParams: get(chatParams),
-            }),
-        });
+    // Capacity errors (429/5xx) or a dropped connection before any content
+    // arrives get two quiet retries — launch-window bursts can briefly
+    // saturate the model provider. The typing indicator stays up throughout.
+    const retryDelaysMs = [2000, 5000];
+    for (let attempt = 0; ; attempt++) {
+        try {
+            response = await fetch("/api/chat", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    messages: get(messages),
+                    chatParams: get(chatParams),
+                }),
+            });
+        } catch (error) {
+            response = undefined;
+            const msg = "Error with fetch request (fetchChatResponse): /api/chat";
+            resp = { aiText: msg };
+            console.error(msg, error);
+        }
+        const retryable =
+            !response || response.status === 429 || response.status >= 500;
+        if (!retryable || attempt >= retryDelaysMs.length) break;
+        const backoff = retryDelaysMs[attempt] + Math.random() * 500;
+        console.warn(
+            `Chat request failed (${response ? response.status : "network error"}); retrying in ${Math.round(backoff)}ms`,
+        );
+        await delay(backoff);
+    }
 
-    } catch (error) {
-        const msg = "Error with fetch request (fetchChatResponse): /api/chat";
-        resp = { aiText: msg };
-        console.error(msg, error);
+    if (!response) {
+        // network failure after retries: surface the error bubble instead of
+        // returning undefined (which would leave the typing dots up forever)
+        return resp;
     }
 
     if (stream && response) {  // streaming
@@ -628,7 +692,6 @@ export async function handleChatInteraction(
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder("utf-8");
-            let scrolled = false;
             let streamedText = "";   // store the streamed text to check for stop keyword
             while (true) {
                 const { done, value } = await reader.read();
@@ -641,9 +704,11 @@ export async function handleChatInteraction(
                 addAIMessage(chunk, true);
                 // throttle stream so it doesn't load too fast for user to read (to avoid skimming)
                 await delay(chunk.length * get(chatParams).ui.streamThrottleRate);
-                if (scrollElement && !scrolled) {
-                    scrollElement.scrollBy(0, 150);
-                    scrolled = true;
+                // stick-to-bottom: follow the growing answer until the user
+                // deliberately scrolls up (wheel/touch handlers break follow)
+                if (scrollElement && get(followStream)) {
+                    await tick();
+                    stickToBottom(scrollElement);
                 }
             }
             if (checkForStopKeyword(streamedText, get(chatParams))) {

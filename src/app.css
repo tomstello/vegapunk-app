@@ -2,115 +2,23 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ————— Leaflet theme (design tokens) ————— */
 @layer base {
-  :root {
-    --vp-paper: #FBF7F0;
-    --vp-ink: #201C15;
-    --vp-muted: #6B6357;   /* ≥5:1 on paper — labels, meta */
-    --vp-hairline: #EAE3D6;
-    --vp-chip: #F1EADD;
-    --vp-card-border: #E0D9CB;
-    --vp-input-border: #DCD2C0;
-    --vp-link: #0F6862;
-    --vp-accent: #26211A;
-    --vp-danger: #8C3B2E;
-  }
-  html, body { height: 100%; background: var(--vp-paper); }
-  body { color: var(--vp-ink); -webkit-tap-highlight-color: transparent; }
-  :focus-visible { outline: 2px solid var(--vp-link); outline-offset: 2px; }
+  html, body { height: 100%; background: #ffffff; }
+  body { -webkit-tap-highlight-color: transparent; }
+  :focus-visible { outline: 2px solid #1d4ed8; outline-offset: 2px; }
 }
 
 @layer components {
-  /* header */
-  .vp-header { display: flex; align-items: center; gap: 10px; height: 54px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--vp-hairline); background: var(--vp-paper); flex: none; }
-  .vp-title { flex: 1 1 0%; min-width: 0; margin: 0; font-size: 15.5px; font-weight: 700; letter-spacing: -.01em; color: var(--vp-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .vp-btn-quiet { flex: none; white-space: nowrap; min-height: 36px; padding: 0 12px; background: transparent; border: 1px solid var(--vp-input-border); border-radius: 9px; color: var(--vp-muted); font-size: 13.5px; font-weight: 500; cursor: pointer; }
-  .vp-btn-quiet:hover { border-color: var(--vp-muted); color: var(--vp-ink); }
-  .vp-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--vp-hairline); background: #F3EDE1; font-size: 14px; color: var(--vp-ink); }
-  .vp-confirm-actions { display: flex; gap: 8px; margin-left: auto; }
-  .vp-btn-keep { min-height: 44px; padding: 0 14px; background: #fff; border: 1.5px solid var(--vp-input-border); border-radius: 9px; color: var(--vp-ink); font-size: 14px; font-weight: 600; cursor: pointer; }
-  .vp-btn-end { min-height: 44px; padding: 0 14px; background: var(--vp-danger); border: none; border-radius: 9px; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
-
-  /* avatar chip — multiply blend sinks the PNG's white box into the tint */
-  .vp-chip { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 9999px; background: var(--vp-chip); overflow: hidden; flex: none; }
-  .vp-chip img { width: 72%; height: 72%; object-fit: contain; mix-blend-mode: multiply; }
-  .vp-chip-lg { width: 32px; height: 32px; }
-
-  /* ——— leaflet entries ———
-     The user's message renders as the ENTRY HEADING (their own words),
-     the assistant's answer flows beneath at full reading width. */
-  .vp-msg { padding: 8px 0; }
-  .vp-entry { padding: 14px 0 2px; border-top: 1px solid var(--vp-hairline); margin-top: 14px; }
-  /* Sentence-case labels for both sides — "Your question" / "Assistant" read as
-     a matched pair; all-caps + letter-spacing was shoutier than this tool wants. */
-  .vp-entry-kicker { font-size: 12.5px; font-weight: 600; letter-spacing: .01em; color: var(--vp-muted); margin-bottom: 5px; }
-  .vp-entry-q { font-size: clamp(17px, 4.6vw, 18.5px); font-weight: 700; line-height: 1.32; letter-spacing: -.012em; color: var(--vp-ink); overflow-wrap: break-word; }
-  .vp-label { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
-  .vp-label-text { font-size: 12.5px; font-weight: 600; letter-spacing: .01em; color: var(--vp-muted); }
-
-  /* assistant markdown body (no container — full reading width)
-     Fluid type: 16px floor on the narrowest phones (iOS zoom threshold, and
-     fits ~10% more of a long answer per screen), scaling to 17px on larger
-     devices. Line-height eases open as the measure widens. */
-  .vp-md { font-size: clamp(16px, 4.25vw, 17px); line-height: 1.58; color: var(--vp-ink); overflow-wrap: break-word; }
-  @media (min-width: 430px) { .vp-md { line-height: 1.65; } }
-  .vp-md p { margin: 0 0 .65em; }
-  .vp-md p:last-child { margin-bottom: 0; }
-  .vp-md ul, .vp-md ol { margin: 0 0 .65em; padding-left: 1.3em; display: grid; gap: .4em; }
-  .vp-md ul { list-style: disc; }
-  .vp-md ol { list-style: decimal; }
-  .vp-md a { color: var(--vp-link); font-weight: 500; text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
-  .vp-md strong { font-weight: 700; }
-  .vp-md mark { background: pink; }
-  /* the initial FAQ message reads as a leaflet: its bold lead-ins become
-     block headings — words untouched, CSS only */
-  .vp-md-initial strong { display: block; margin: 1.1em 0 .28em; font-size: clamp(16.5px, 4.4vw, 17.5px); letter-spacing: -.008em; }
-  .vp-md-initial p { margin: 0; }
-  /* streaming caret: sits at the end of the last block while text grows */
-  .vp-streaming > :last-child::after { content: ""; display: inline-block; width: 2px; height: 1em; background: var(--vp-ink); vertical-align: -2px; margin-left: 2px; animation: vp-caret 1s steps(1) infinite; }
-
-  /* typing indicator (pre-first-token / non-stream wait) — fixed-height slot, no jank */
-  .vp-typing { display: flex; align-items: center; gap: 8px; height: 34px; }
-  .vp-typing span { width: 7px; height: 7px; border-radius: 9999px; background: var(--vp-muted); animation: vp-breathe 1.3s ease-in-out infinite; }
-  .vp-typing span:nth-child(2) { animation-delay: .2s; }
-  .vp-typing span:nth-child(3) { animation-delay: .4s; }
-  .vp-typing em { font-style: normal; font-size: 13px; color: var(--vp-muted); }
-
-  /* input bar */
-  .vp-inputbar { display: flex; align-items: flex-end; gap: 8px; padding: 10px 0 calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--vp-hairline); background: var(--vp-paper); }
-  .vp-input { flex: 1 1 0%; min-width: 0; min-height: 50px; background: #fff; border: 1.5px solid var(--vp-input-border); border-radius: 11px; padding: 12px 14px; font-size: 16px; color: var(--vp-ink); }
-  .vp-input::placeholder { color: var(--vp-muted); }
-  .vp-input:focus { outline: none; border-color: var(--vp-accent); box-shadow: 0 0 0 3px rgba(38, 33, 26, .14); }
-  .vp-send { flex: none; min-height: 50px; padding: 0 20px; background: var(--vp-accent); color: #F7F1E6; border: none; border-radius: 11px; font-size: 16px; font-weight: 600; cursor: pointer; }
-  .vp-send:hover { background: #383126; }
-
-  /* affordances */
-  /* Scroll-to-latest: a labelled pill, not a bare arrow. A long streamed answer
-     can run several screens, so the control says what it does — and while the
-     answer is still arriving it says so, which is the moment people most need
-     reassurance that nothing is stuck. The fade scrim above it signals
-     "text continues below" even before anyone reads the pill. */
-  .vp-jump { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; padding: 0 16px 0 14px; border-radius: 9999px; background: var(--vp-accent); color: #F7F1E6; border: none; box-shadow: 0 3px 12px rgba(32, 28, 21, .22); font-size: 14.5px; font-weight: 600; cursor: pointer; }
-  .vp-jump:hover { background: #383126; }
-  .vp-jump svg { flex: none; }
-  .vp-jump .vp-jump-dots { display: inline-flex; gap: 3px; }
-  .vp-jump .vp-jump-dots i { width: 5px; height: 5px; border-radius: 9999px; background: currentColor; animation: vp-breathe 1.3s ease-in-out infinite; }
-  .vp-jump .vp-jump-dots i:nth-child(2) { animation-delay: .2s; }
-  .vp-jump .vp-jump-dots i:nth-child(3) { animation-delay: .4s; }
-  /* fade scrim: sits just above the input bar, over the scrolling text */
-  /* Tall enough that the pill floats over faded text rather than legible text. */
-  .vp-scrim { position: absolute; left: 0; right: 0; top: -104px; height: 104px; pointer-events: none; background: linear-gradient(to bottom, rgba(251, 247, 240, 0) 0%, rgba(251, 247, 240, .72) 42%, var(--vp-paper) 78%); }
-  .vp-pill { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 9999px; background: #fff; border: 1px solid var(--vp-card-border); box-shadow: 0 2px 8px rgba(32, 28, 21, .12); cursor: pointer; }
-  .vp-endnote { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 0 calc(20px + env(safe-area-inset-bottom)); margin: 0; border-top: 1px solid var(--vp-hairline); font-size: 15.5px; color: var(--vp-muted); text-align: center; }
-  .vp-download { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 20px; background: #fff; border: 1.5px solid var(--vp-input-border); border-radius: 11px; color: var(--vp-ink); font-size: 15.5px; font-weight: 600; cursor: pointer; }
-  .vp-download:hover { border-color: var(--vp-muted); }
-  .vp-download-note { font-size: 12px; color: var(--vp-muted); }
-  .vp-counter { pointer-events: auto; margin-top: 6px; padding: 4px 14px; background: #fff; border: 1px solid var(--vp-hairline); border-radius: 12px; font-size: 12px; color: var(--vp-muted); box-shadow: 0 1px 3px rgba(32, 28, 21, .08); }
-  .vp-votes { display: flex; gap: 8px; margin-top: 8px; }
-  .vp-vote { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 36px; border-radius: 9px; border: 1px solid var(--vp-hairline); background: #fff; cursor: pointer; }
-  .vp-vote img { width: 18px; height: 18px; }
-  .vp-vote-active { border-color: var(--vp-link); box-shadow: 0 0 0 1.5px var(--vp-link) inset; }
+  /* Collapsible FAQ (initial message): native <details> styled as tappable
+     rows. No JS — keyboard and screen-reader behavior come with the element. */
+  .prose details { margin: 0.5em 0; border: 1px solid #e2e8f0; border-radius: 0.5rem; background: #fff; }
+  .prose summary { display: flex; align-items: center; gap: 0.5rem; min-height: 44px; padding: 0.55rem 0.75rem; font-weight: 600; cursor: pointer; list-style: none; }
+  .prose summary::-webkit-details-marker { display: none; }
+  .prose summary::after { content: ""; margin-left: auto; width: 0.5em; height: 0.5em; flex: none; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); transition: transform 0.15s ease; }
+  .prose details[open] > summary::after { transform: rotate(225deg); }
+  .prose details > :not(summary) { padding: 0 0.75rem; }
+  .prose details > :last-child { padding-bottom: 0.65rem; }
+  .prose details p { margin: 0.25em 0 0.5em; }
 }
 
 @layer utilities {
@@ -118,11 +26,8 @@
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 }
 
-@keyframes vp-breathe { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
-@keyframes vp-caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
-
 @media (prefers-reduced-motion: reduce) {
-  .vp-typing span { animation: none; opacity: .7; }
-  .vp-streaming > :last-child::after { animation: none; }
   * { scroll-behavior: auto !important; }
+  .prose summary::after { transition: none; }
+  .loading { animation: none; }
 }

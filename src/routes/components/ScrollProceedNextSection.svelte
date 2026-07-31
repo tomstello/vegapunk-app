@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { chatParams } from "$lib/chatParams";
-	import medicalAvatar from "$lib/icons/medical2.png";
 	import { messages } from "$lib/messages";
 
 	// Builds a plain-text copy of the visible transcript and saves it to the
@@ -31,35 +30,36 @@
 	};
 </script>
 
-<div class="vp-endnote">
-	<span class="vp-chip" style="width:26px;height:26px"
-		><img alt="" src={medicalAvatar} /></span
-	>
-	<span>{$chatParams.appearance.endChatText}</span>
+<div
+	class="flex flex-col items-center gap-2 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] text-center"
+>
+	<p class="flex justify-center pt-2 text-lg font-bold text-pink-700">
+		{$chatParams.appearance.endChatText}
+	</p>
 	{#if $chatParams.appearance.showDownloadButton}
-	<button type="button" class="vp-download" on:click={downloadTranscript}>
-		<svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"
-			><rect x="7" y="1.5" width="2" height="9" rx="1" fill="currentColor"
-			></rect><path
-				d="M4 7.5 L8 11.5 L12 7.5"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				fill="none"
-			></path><rect
-				x="2.5"
-				y="13"
-				width="11"
-				height="2"
-				rx="1"
-				fill="currentColor"
-			></rect></svg
+		<button type="button" class="btn min-h-[44px]" on:click={downloadTranscript}>
+			<svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"
+				><rect x="7" y="1.5" width="2" height="9" rx="1" fill="currentColor"
+				></rect><path
+					d="M4 7.5 L8 11.5 L12 7.5"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					fill="none"
+				></path><rect
+					x="2.5"
+					y="13"
+					width="11"
+					height="2"
+					rx="1"
+					fill="currentColor"
+				></rect></svg
+			>
+			Download this conversation
+		</button>
+		<span class="text-xs text-slate-500"
+			>Saves a text copy to your device — nothing is shared.</span
 		>
-		Download this conversation
-	</button>
-	<span class="vp-download-note"
-		>Saves a text copy to your device — nothing is shared.</span
-	>
 	{/if}
 </div>

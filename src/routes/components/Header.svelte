@@ -33,31 +33,41 @@
 	$: if (!canEnd) confirming = false;
 </script>
 
-<header class="vp-header">
+<header
+	class="flex items-center gap-3 h-14 px-4 flex-none bg-white border-b border-slate-200"
+>
 	{#if $chatParams.appearance.showBotAvatar}
-		<span class="vp-chip vp-chip-lg"><img alt="" src={medicalAvatar} /></span>
+		<img alt="" src={medicalAvatar} class="w-8 h-8 rounded-full" />
 	{/if}
-	<h1 class="vp-title">{$chatParams.appearance.headerTitle}</h1>
+	<h1 class="flex-1 min-w-0 truncate m-0 text-base font-bold text-slate-900">
+		{$chatParams.appearance.headerTitle}
+	</h1>
 	{#if canEnd && !confirming}
 		<button
 			type="button"
-			class="vp-btn-quiet"
+			class="btn btn-ghost btn-sm min-h-[44px] font-medium text-slate-600"
 			on:click={() => (confirming = true)}>End chat</button
 		>
 	{/if}
 </header>
 
 {#if confirming}
-	<div class="vp-confirm" role="alertdialog" aria-label="End this chat?">
+	<div
+		class="flex flex-wrap items-center gap-2 px-4 py-2 text-sm bg-slate-100 border-b border-slate-200"
+		role="alertdialog"
+		aria-label="End this chat?"
+	>
 		<span>End this chat? You won't be able to ask more questions.</span>
-		<div class="vp-confirm-actions">
+		<div class="flex gap-2 ml-auto">
 			<button
 				type="button"
-				class="vp-btn-keep"
+				class="btn btn-sm min-h-[44px] bg-white"
 				on:click={() => (confirming = false)}>Keep chatting</button
 			>
-			<button type="button" class="vp-btn-end" on:click={endChat}
-				>End chat</button
+			<button
+				type="button"
+				class="btn btn-sm min-h-[44px] bg-red-800 hover:bg-red-900 text-white border-none"
+				on:click={endChat}>End chat</button
 			>
 		</div>
 	</div>

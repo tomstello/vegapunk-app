@@ -1,6 +1,7 @@
 <script lang="ts">
     import type { ChatMessageType } from "$lib/chatParams";
     import { chatParams } from "$lib/chatParams";
+    import medicalAvatar from "$lib/icons/medical2.png";
     import thumbsdown from "$lib/icons/thumbsdown.svg";
     import thumbsup from "$lib/icons/thumbsup.svg";
     import { isLoading } from "$lib/stores";
@@ -30,47 +31,47 @@
     $: handleClick(thumb);
 
     $: isLast = index === nMessages - 1;
-    // dots before the first token arrives (streaming), and for the whole wait
-    // when not streaming (the empty placeholder message added by Messages.svelte)
-    $: waiting =
-        message.content === "" ||
-        (!$chatParams.ui.stream && $isLoading && isLast);
-    // caret at the end of the growing text while streaming
-    $: streaming =
-        $chatParams.ui.stream && $isLoading && isLast && message.content !== "";
-    $: bodyClass = `vp-md ${message.isInitial ? "vp-md-initial" : ""} ${streaming ? "vp-streaming" : ""} ${$chatParams.appearance.bubbleAssistantTextColor} ${$chatParams.appearance.bubbleAssistantBackground}`;
+    // animated avatar badge while an answer is pending for this bubble
+    $: waiting = message.content === "" || ($isLoading && isLast);
+    $: assistantClass = `prose chat-bubble max-w-[90%] ${$chatParams.appearance.showBotAvatar ? "ml-10" : "ml-0"} ${$chatParams.appearance.bubbleAssistantTextColor} ${$chatParams.appearance.bubbleAssistantBackground}`;
 </script>
 
-<div class="vp-msg vp-msg-assistant">
+<div class="chat chat-start relative">
     {#if $chatParams.appearance.showBotAvatar}
-        <div class="vp-label">
-            <span class="vp-label-text">Assistant</span>
+        <div class="chat-image avatar indicator absolute top-2">
+            {#if waiting}
+                <span
+                    class={`loading loading-dots loading-sm indicator-item badge badge-warning text-white mr-1 mt-2 ${$chatParams.ui.stream ? "bg-[#6766db]" : "bg-[#a9e415]"}`}
+                    role="status"
+                    aria-label="The assistant is answering"
+                ></span>
+            {/if}
+            <div class="w-12 mt-2 rounded-full">
+                <img alt="" src={medicalAvatar} />
+            </div>
         </div>
     {/if}
 
-    {#if waiting}
-        <div class="vp-typing" role="status" aria-label="The assistant is answering">
-            <span></span><span></span><span></span>
-            <em>Answering…</em>
-        </div>
-    {:else}
-        <div class={bodyClass}>
+    {#if message.content !== ""}
+        <div class={assistantClass}>
             {@html marked(message.content)}
         </div>
+    {:else}
+        <div class={assistantClass}>&nbsp;</div>
     {/if}
 
     {#if $chatParams.study.showVoteButtons}
         {#if index < nMessages - 1 || (index === nMessages - 1 && !$isLoading)}
-            <div class="vp-votes">
+            <div class="chat-footer ml-14 flex gap-1 pt-1">
                 <button
                     on:click|preventDefault={() => {
                         thumb = "up";
                     }}
                     aria-label="This answer was helpful"
                     aria-pressed={votedUp}
-                    class={`vp-vote ${votedUp ? "vp-vote-active" : ""} ${$chatParams.appearance.voteButtonOpacity}`}
+                    class={`btn btn-xs ${votedUp ? "border-2 border-sky-500" : ""} ${$chatParams.appearance.voteButtonOpacity}`}
                 >
-                    <img alt="" src={thumbsup} />
+                    <img alt="" src={thumbsup} class="w-4 h-4" />
                 </button>
                 <button
                     on:click|preventDefault={() => {
@@ -78,9 +79,9 @@
                     }}
                     aria-label="This answer was not helpful"
                     aria-pressed={votedDown}
-                    class={`vp-vote ${votedDown ? "vp-vote-active" : ""} ${$chatParams.appearance.voteButtonOpacity}`}
+                    class={`btn btn-xs ${votedDown ? "border-2 border-sky-500" : ""} ${$chatParams.appearance.voteButtonOpacity}`}
                 >
-                    <img alt="" src={thumbsdown} />
+                    <img alt="" src={thumbsdown} class="w-4 h-4" />
                 </button>
             </div>
         {/if}
