@@ -32,10 +32,31 @@ const openRouterProviderPrefs = (): Record<string, unknown> | undefined => {
     return prefs;
 };
 
+// Anthropic prompt caching (server-enforced, like the routing policy):
+//   OPENROUTER_PROMPT_CACHING  "true" (default) sends OpenRouter's top-level
+//   automatic cache_control for Anthropic models. OpenRouter translates it
+//   into trailing breakpoints per provider (incl. Amazon Bedrock) and
+//   advances the breakpoint as the conversation grows. Cache reads bill at
+//   0.1x input price, writes at 1.25x. Opus-class models need a >=4096-token
+//   prefix before caching engages — the system prompt + FAQ + first exchange
+//   reach that from roughly the second turn, which is where the token volume
+//   lives. https://openrouter.ai/docs/features/prompt-caching
+const openRouterCacheControl = (chatParams: ChatParamsType): Record<string, unknown> | undefined => {
+    if (!isOpenRouter(chatParams.model.baseURL)) return undefined;
+    if (!chatParams.model.name.startsWith('anthropic/')) return undefined;
+    if ((env.OPENROUTER_PROMPT_CACHING ?? 'true').toLowerCase() === 'false') return undefined;
+    return { type: 'ephemeral' };
+};
+
 export const createOpenAIProvider = (chatParams: ChatParamsType, enableStreaming = false) => {
     //https://v02.api.js.langchain.com/classes/langchain_openai.ChatOpenAI.html
     // Log the parameters to debug
     const providerPrefs = isOpenRouter(chatParams.model.baseURL) ? openRouterProviderPrefs() : undefined;
+    const cacheControl = openRouterCacheControl(chatParams);
+    const modelKwargs: Record<string, unknown> = {
+        ...(providerPrefs ? { provider: providerPrefs } : {}),
+        ...(cacheControl ? { cache_control: cacheControl } : {}),
+    };
     return new ChatOpenAI({
         streaming: enableStreaming,
         model: chatParams.model.name,
@@ -51,7 +72,7 @@ export const createOpenAIProvider = (chatParams: ChatParamsType, enableStreaming
         configuration: {
             baseURL: chatParams.model.baseURL,
         },
-        ...(providerPrefs ? { modelKwargs: { provider: providerPrefs } } : {}),
+        ...(Object.keys(modelKwargs).length > 0 ? { modelKwargs } : {}),
     });
 };
 

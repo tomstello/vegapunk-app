@@ -73,6 +73,7 @@ export interface Appearance {
     showInputElement: boolean;
     headerTitle: string; // ADDITIVE (2026 redesign): participant-facing tool name in the header
     showDownloadButton: boolean; // ADDITIVE: end-of-chat transcript download; OFF pending PI sign-off
+    privacyNote: string; // ADDITIVE: one-line privacy notice rendered as a slim banner under the header (empty = hidden)
 }
 
 // Join keys for transcript checkpointing: minted by the survey page and
@@ -152,6 +153,7 @@ export const chatParams = writable<ChatParamsType>({
         showInputElement: true,
         headerTitle: "Vaccine Questions",
         showDownloadButton: false,
+        privacyNote: "",
     },
     appURL_: ""
 });

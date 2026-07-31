@@ -30,23 +30,13 @@
     }
     $: handleClick(thumb);
 
-    $: isLast = index === nMessages - 1;
-    // animated avatar badge while an answer is pending for this bubble
-    $: waiting = message.content === "" || ($isLoading && isLast);
     $: assistantClass = `prose chat-bubble max-w-[90%] ${$chatParams.appearance.showBotAvatar ? "ml-10" : "ml-0"} ${$chatParams.appearance.bubbleAssistantTextColor} ${$chatParams.appearance.bubbleAssistantBackground}`;
 </script>
 
 <div class="chat chat-start relative">
     {#if $chatParams.appearance.showBotAvatar}
-        <div class="chat-image avatar indicator absolute top-2">
-            {#if waiting}
-                <span
-                    class={`loading loading-dots loading-sm indicator-item badge badge-warning text-white mr-1 mt-2 ${$chatParams.ui.stream ? "bg-[#6766db]" : "bg-[#a9e415]"}`}
-                    role="status"
-                    aria-label="The assistant is answering"
-                ></span>
-            {/if}
-            <div class="w-12 mt-2 rounded-full">
+        <div class="chat-image avatar absolute top-2">
+            <div class="w-10 mt-2 rounded-full">
                 <img alt="" src={medicalAvatar} />
             </div>
         </div>
@@ -57,7 +47,17 @@
             {@html marked(message.content)}
         </div>
     {:else}
-        <div class={assistantClass}>&nbsp;</div>
+        <!-- Empty placeholder message (non-stream / online-search wait):
+             quiet three-dot pulse where the answer will appear. -->
+        <div class={assistantClass}>
+            <div
+                class="chat-typing"
+                role="status"
+                aria-label="The assistant is answering"
+            >
+                <span></span><span></span><span></span>
+            </div>
+        </div>
     {/if}
 
     {#if $chatParams.study.showVoteButtons}

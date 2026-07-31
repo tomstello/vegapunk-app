@@ -9,6 +9,25 @@
 }
 
 @layer components {
+  /* Frontier-chat mobile type scale inside answer bubbles: headings read as
+     emphasis within the conversation, not as posters. */
+  .chat-bubble.prose { font-size: 1rem; line-height: 1.6; }
+  .chat-bubble.prose :where(h1, h2, h3, h4, h5, h6) { font-size: 1.0625rem; font-weight: 600; line-height: 1.4; margin: 1.1em 0 0.45em; }
+  .chat-bubble.prose :where(p) { margin: 0.65em 0; }
+  .chat-bubble.prose :where(ul, ol) { margin: 0.5em 0; padding-left: 1.35em; }
+  .chat-bubble.prose :where(li) { margin: 0.25em 0; padding-left: 0.1em; }
+  .chat-bubble.prose :where(li p) { margin: 0.2em 0; }
+  .chat-bubble.prose :where(strong) { font-weight: 600; }
+  .chat-bubble.prose :where(hr) { margin: 1em 0; }
+  .chat-bubble.prose > :first-child { margin-top: 0; }
+  .chat-bubble.prose > :last-child { margin-bottom: 0; }
+
+  /* Three-dot "answer is coming" pulse (in the bubble, not over the avatar). */
+  .chat-typing { display: flex; align-items: center; gap: 5px; height: 1.5rem; }
+  .chat-typing span { width: 7px; height: 7px; border-radius: 9999px; background: #94a3b8; animation: typing-breathe 1.3s ease-in-out infinite; }
+  .chat-typing span:nth-child(2) { animation-delay: 0.2s; }
+  .chat-typing span:nth-child(3) { animation-delay: 0.4s; }
+
   /* Collapsible FAQ (initial message): native <details> styled as tappable
      rows. No JS — keyboard and screen-reader behavior come with the element. */
   .prose details { margin: 0.5em 0; border: 1px solid #e2e8f0; border-radius: 0.5rem; background: #fff; }
@@ -26,8 +45,14 @@
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 }
 
+@keyframes typing-breathe {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; }
   .prose summary::after { transition: none; }
   .loading { animation: none; }
+  .chat-typing span { animation: none; opacity: 0.6; }
 }

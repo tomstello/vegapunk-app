@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ChatMessageType } from "$lib/chatParams";
 	import { chatParams } from "$lib/chatParams";
+	import medicalAvatar from "$lib/icons/medical2.png";
 	import { addEmptyAIMessage, messages } from "$lib/messages";
 	import { highlightedStrings, isLoading, thumbs } from "$lib/stores";
 	import { marked } from "marked";
@@ -165,3 +166,28 @@
 		{/if}
 	{/if}
 {/each}
+
+{#if $isLoading && $messages.length > 0 && $messages[$messages.length - 1].role === "user"}
+	<!-- Streaming mode, before the first token arrives: no assistant message
+	     exists yet, so show a standalone three-dot pulse where it will appear. -->
+	<div class="chat chat-start relative">
+		{#if $chatParams.appearance.showBotAvatar}
+			<div class="chat-image avatar absolute top-2">
+				<div class="w-10 mt-2 rounded-full">
+					<img alt="" src={medicalAvatar} />
+				</div>
+			</div>
+		{/if}
+		<div
+			class={`chat-bubble max-w-[90%] ${$chatParams.appearance.showBotAvatar ? "ml-10" : "ml-0"} ${$chatParams.appearance.bubbleAssistantBackground}`}
+		>
+			<div
+				class="chat-typing"
+				role="status"
+				aria-label="The assistant is answering"
+			>
+				<span></span><span></span><span></span>
+			</div>
+		</div>
+	</div>
+{/if}
