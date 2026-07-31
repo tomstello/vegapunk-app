@@ -157,7 +157,9 @@
 {#if $isLoaded}
 	<main class="h-svh flex flex-col">
 		<Header {nextSection} />
-		{#if $chatParams.appearance.privacyNote}
+		{#if $chatParams.appearance.privacyNote && nUserMessagesSent === 0}
+			<!-- Shown until the participant sends their first message, then the
+			     space goes back to the conversation. -->
 			<p
 				class="flex-none m-0 px-4 py-2 text-[13px] leading-snug text-slate-500 bg-slate-50 border-b border-slate-200"
 			>

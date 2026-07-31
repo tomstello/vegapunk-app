@@ -169,17 +169,26 @@
 
 {#if $isLoading && $messages.length > 0 && $messages[$messages.length - 1].role === "user"}
 	<!-- Streaming mode, before the first token arrives: no assistant message
-	     exists yet, so show a standalone three-dot pulse where it will appear. -->
+	     exists yet, so show a standalone three-dot pulse where it will appear.
+	     Same responsive layout as AssistantMessageBubble: avatar above on
+	     mobile, floating beside on sm+. -->
+	{#if $chatParams.appearance.showBotAvatar}
+		<div class="avatar mt-2 sm:hidden">
+			<div class="w-8 rounded-full">
+				<img alt="" src={medicalAvatar} />
+			</div>
+		</div>
+	{/if}
 	<div class="chat chat-start relative">
 		{#if $chatParams.appearance.showBotAvatar}
-			<div class="chat-image avatar absolute top-2">
+			<div class="chat-image avatar absolute top-2 hidden sm:block">
 				<div class="w-10 mt-2 rounded-full">
 					<img alt="" src={medicalAvatar} />
 				</div>
 			</div>
 		{/if}
 		<div
-			class={`chat-bubble max-w-[90%] ${$chatParams.appearance.showBotAvatar ? "ml-10" : "ml-0"} ${$chatParams.appearance.bubbleAssistantBackground}`}
+			class={`chat-bubble max-w-none sm:max-w-[90%] ml-0 ${$chatParams.appearance.showBotAvatar ? "sm:ml-10" : ""} ${$chatParams.appearance.bubbleAssistantBackground}`}
 		>
 			<div
 				class="chat-typing"

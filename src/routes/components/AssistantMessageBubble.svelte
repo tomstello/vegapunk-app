@@ -30,12 +30,23 @@
     }
     $: handleClick(thumb);
 
-    $: assistantClass = `prose chat-bubble max-w-[90%] ${$chatParams.appearance.showBotAvatar ? "ml-10" : "ml-0"} ${$chatParams.appearance.bubbleAssistantTextColor} ${$chatParams.appearance.bubbleAssistantBackground}`;
+    // Mobile: the answer spans the full width with the avatar in flow above it
+    // (a side avatar column would squeeze the text — the part that matters).
+    // Desktop (sm+): classic side-by-side bubble with the floating avatar.
+    $: assistantClass = `prose chat-bubble max-w-none sm:max-w-[90%] ml-0 ${$chatParams.appearance.showBotAvatar ? "sm:ml-10" : ""} ${$chatParams.appearance.bubbleAssistantTextColor} ${$chatParams.appearance.bubbleAssistantBackground}`;
 </script>
+
+{#if $chatParams.appearance.showBotAvatar}
+    <div class="avatar mt-2 sm:hidden">
+        <div class="w-8 rounded-full">
+            <img alt="" src={medicalAvatar} />
+        </div>
+    </div>
+{/if}
 
 <div class="chat chat-start relative">
     {#if $chatParams.appearance.showBotAvatar}
-        <div class="chat-image avatar absolute top-2">
+        <div class="chat-image avatar absolute top-2 hidden sm:block">
             <div class="w-10 mt-2 rounded-full">
                 <img alt="" src={medicalAvatar} />
             </div>
@@ -62,7 +73,7 @@
 
     {#if $chatParams.study.showVoteButtons}
         {#if index < nMessages - 1 || (index === nMessages - 1 && !$isLoading)}
-            <div class="chat-footer ml-14 flex gap-1 pt-1">
+            <div class="chat-footer ml-0 sm:ml-14 flex gap-1 pt-1">
                 <button
                     on:click|preventDefault={() => {
                         thumb = "up";
