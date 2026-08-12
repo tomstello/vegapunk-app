@@ -67,7 +67,7 @@ async def install_api_routes(
             "sessionToken": TOKEN,
             "sessionKey": request["chatSessionKey"],
             "condition": condition,
-            "configVersion": requested.get("configVersion", f"albertsons-2026-{condition}-v6"),
+            "configVersion": requested.get("configVersion", f"albertsons-2026-{condition}-v7"),
             "configHash": selected_hash,
             "initialMessages": [
                 {
@@ -95,14 +95,21 @@ async def install_api_routes(
         chat_requests.append(request)
         sequence = request["sequence"]
         turn_id = request["turn"]["id"]
+        # The v7 server always returns the canonical (redacted) turn text in
+        # meta; a clean-text scrub is the identity, so the mock echoes the
+        # request. This exercises the client adoption path in every test.
+        meta_event = (
+            "meta",
+            {"v": 2, "sequence": sequence, "scrubbedUserMessage": request["turn"]["userMessage"]},
+        )
         if chat_mode == "eof":
             events = [
-                ("meta", {"v": 2, "sequence": sequence}),
+                meta_event,
                 ("delta", {"v": 2, "text": "A partial answer."}),
             ]
         else:
             events = [
-                ("meta", {"v": 2, "sequence": sequence}),
+                meta_event,
                 ("delta", {"v": 2, "text": "A complete **answer**."}),
                 (
                     "done",
@@ -335,7 +342,7 @@ async def test_parent_persist_is_nonterminal_and_reason_survives_reload(browser)
           if (data.type === 'vegapunk:hello') {{
             const init = {{v:2,type:'qualtrics:init',condition:'flu',helloNonce:data.helloNonce,
               nonce:'{protocol_nonce}',sessionKey:'{session_key}',attemptNonce:'{attempt_nonce}',
-              expectedConfigVersion:'albertsons-2026-flu-v6',parentOrigin:location.origin,sequence:0}};
+              expectedConfigVersion:'albertsons-2026-flu-v7',parentOrigin:location.origin,sequence:0}};
             if (window.lastTerminalReason) init.terminalReason = window.lastTerminalReason;
             event.source.postMessage(init, location.origin);
           }}
@@ -503,9 +510,8 @@ async def test_inline_end_confirmation_focus(browser):
     await page.close()
 
 
-async def install_controlled_chat_stream(page):
-    await page.add_init_script(
-        """
+async def install_controlled_chat_stream(page, *, auto_meta=True):
+    script = """
         (() => {
           const nativeFetch = window.fetch.bind(window);
           const encoder = new TextEncoder();
@@ -516,16 +522,21 @@ async def install_controlled_chat_stream(page):
             if (url.pathname !== '/api/v2/chat') return nativeFetch(input, init);
             const request = JSON.parse(init.body);
             let controller;
+            const emitMeta = (scrubbed) => {
+              controller.enqueue(encoder.encode(eventText('meta', {
+                v: 2, sequence: request.sequence,
+                ...(scrubbed === undefined ? {} : { scrubbedUserMessage: scrubbed }),
+              })));
+            };
             const body = new ReadableStream({
               start(value) {
                 controller = value;
-                controller.enqueue(encoder.encode(eventText('meta', {
-                  v: 2, sequence: request.sequence,
-                })));
+                if (__AUTO_META__) emitMeta(request.turn.userMessage);
               },
             });
             window.__v2TestStream = {
               request,
+              meta: emitMeta,
               delta(text) {
                 controller.enqueue(encoder.encode(eventText('delta', { v: 2, text })));
               },
@@ -548,7 +559,7 @@ async def install_controlled_chat_stream(page):
           };
         })();
         """
-    )
+    await page.add_init_script(script.replace("__AUTO_META__", "true" if auto_meta else "false"))
 
 
 async def settle_render(page):
@@ -671,7 +682,7 @@ async def test_prompt_hotfix_preserves_inflight_session(browser):
     await page.reload(wait_until="networkidle")
     await page.get_by_test_id("question-input").wait_for()
     assert sessions[-1]["resumeConfig"] == {
-        "configVersion": "albertsons-2026-flu-v6",
+        "configVersion": "albertsons-2026-flu-v7",
         "configHash": old_hash,
     }
     assert await page.get_by_text("Question before prompt hotfix", exact=True).count() == 1
@@ -722,6 +733,148 @@ async def test_prompt_hotfix_preserves_inflight_session(browser):
     await page.close()
 
 
+
+
+RAW_PII_QUESTION = "My name is Jane Doe and my email is jane.doe@example.com"
+SCRUBBED_PII_QUESTION = "My name is [NAME_1] and my email is [EMAIL_1]"
+
+
+async def read_v2_state(page):
+    raw = await page.evaluate(
+        """() => {
+          const key = Object.keys(sessionStorage).find(
+            (k) => k.startsWith('vegapunk:v2:') && !k.startsWith('vegapunk:v2:active:')
+          );
+          return key ? sessionStorage.getItem(key) : null;
+        }"""
+    )
+    assert raw, "expected a persisted v2 state in sessionStorage"
+    return json.loads(raw)
+
+
+def assert_no_raw_pii(state, checkpoint_requests):
+    for message in state["messages"]:
+        assert "Jane Doe" not in message["content"], "raw name leaked into a stored message"
+        assert "jane.doe@example.com" not in message["content"], "raw email leaked into a stored message"
+    for request in checkpoint_requests:
+        assert "Jane Doe" not in request["transcriptJson"], "raw name leaked into a checkpoint body"
+        assert "jane.doe@example.com" not in request["transcriptJson"], "raw email leaked into a checkpoint body"
+
+
+async def test_pii_never_persisted_pre_meta(browser):
+    page = await browser.new_page()
+    await install_controlled_chat_stream(page, auto_meta=False)
+    _, checkpoint_requests = await install_api_routes(page)
+    await page.goto(f"{BASE}/study/albertsons-2026/flu", wait_until="networkidle")
+    await page.get_by_test_id("question-input").fill(RAW_PII_QUESTION)
+    await page.get_by_test_id("send-question").click()
+    await wait_for_check(
+        lambda: page.evaluate("Boolean(window.__v2TestStream)"),
+        description="chat request to start",
+    )
+
+    # Pre-meta: the raw turn exists only in memory and as the parked draft.
+    state = await read_v2_state(page)
+    assert_no_raw_pii(state, checkpoint_requests)
+    assert state["draft"] == RAW_PII_QUESTION
+    assert state["lifecycle"] == "ready"
+    assert all(m["role"] != "user" or m["isInitial"] for m in state["messages"])
+
+    # An exit flush inside the window must persist the same clean prefix.
+    await page.evaluate("() => window.dispatchEvent(new Event('pagehide'))")
+    state = await read_v2_state(page)
+    assert_no_raw_pii(state, checkpoint_requests)
+
+    # Deliver the canonical text, then the answer.
+    await page.evaluate(
+        "(scrubbed) => window.__v2TestStream.meta(scrubbed)", SCRUBBED_PII_QUESTION
+    )
+    await page.evaluate("() => window.__v2TestStream.delta('An evidence-based answer.')")
+    await page.evaluate("() => window.__v2TestStream.done()")
+    await wait_count(checkpoint_requests, 1)
+    await wait_for_check(
+        lambda: page.get_by_test_id("question-input").is_enabled(),
+        description="turn to complete",
+    )
+
+    state = await read_v2_state(page)
+    assert_no_raw_pii(state, checkpoint_requests)
+    stored_user = [m for m in state["messages"] if m["role"] == "user" and not m["isInitial"]]
+    assert len(stored_user) == 1
+    assert stored_user[0]["content"] == SCRUBBED_PII_QUESTION
+    assert SCRUBBED_PII_QUESTION in checkpoint_requests[-1]["transcriptJson"]
+
+    # The participant's own bubble keeps showing what they typed.
+    bubble = await page.locator(".user-message p").first.inner_text()
+    assert bubble == RAW_PII_QUESTION
+
+    # The next turn's history echo must carry the scrubbed text byte-for-byte.
+    await page.get_by_test_id("question-input").fill("A second question")
+    await page.get_by_test_id("send-question").click()
+    await wait_for_check(
+        lambda: page.evaluate(
+            "Boolean(window.__v2TestStream && window.__v2TestStream.request.sequence === 2)"
+        ),
+        description="second chat request",
+    )
+    history = await page.evaluate("() => window.__v2TestStream.request.history")
+    assert history[0]["role"] == "user"
+    assert history[0]["content"] == SCRUBBED_PII_QUESTION
+    await page.close()
+
+
+async def test_pii_reload_pre_meta(browser):
+    page = await browser.new_page()
+    await install_controlled_chat_stream(page, auto_meta=False)
+    _, checkpoint_requests = await install_api_routes(page)
+    await page.goto(f"{BASE}/study/albertsons-2026/flu", wait_until="networkidle")
+    await page.get_by_test_id("question-input").fill(RAW_PII_QUESTION)
+    await page.get_by_test_id("send-question").click()
+    await wait_for_check(
+        lambda: page.evaluate("Boolean(window.__v2TestStream)"),
+        description="chat request to start",
+    )
+
+    await page.reload(wait_until="networkidle")
+    await page.get_by_test_id("message-list").wait_for()
+
+    # The turn is absent from the restored record; the question returns to
+    # the composer from the browser-local draft.
+    state = await read_v2_state(page)
+    assert_no_raw_pii(state, checkpoint_requests)
+    assert all(m["role"] != "user" or m["isInitial"] for m in state["messages"])
+    assert await page.locator(".user-message").count() == 0
+    composer = await page.get_by_test_id("question-input").input_value()
+    assert composer == RAW_PII_QUESTION
+    await page.close()
+
+
+async def test_pii_endchat_pre_meta(browser):
+    page = await browser.new_page()
+    await install_controlled_chat_stream(page, auto_meta=False)
+    _, checkpoint_requests = await install_api_routes(page)
+    await page.goto(f"{BASE}/study/albertsons-2026/flu", wait_until="networkidle")
+    await page.get_by_test_id("question-input").fill(RAW_PII_QUESTION)
+    await page.get_by_test_id("send-question").click()
+    await wait_for_check(
+        lambda: page.evaluate("Boolean(window.__v2TestStream)"),
+        description="chat request to start",
+    )
+
+    await page.get_by_test_id("end-chat").click()
+    await page.get_by_test_id("confirm-end").click()
+    await wait_for_check(
+        lambda: page.locator(".completion-card").count(),
+        description="terminal completion card",
+    )
+
+    state = await read_v2_state(page)
+    assert_no_raw_pii(state, checkpoint_requests)
+    assert state["chatEndISO"], "terminal capture must remain terminal"
+    assert all(m["role"] != "user" or m["isInitial"] for m in state["messages"])
+    await page.close()
+
+
 async def main():
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
@@ -735,6 +888,9 @@ async def main():
             await test_inline_end_confirmation_focus(browser)
             await test_stream_follow_pause_and_resume(browser)
             await test_prompt_hotfix_preserves_inflight_session(browser)
+            await test_pii_never_persisted_pre_meta(browser)
+            await test_pii_reload_pre_meta(browser)
+            await test_pii_endchat_pre_meta(browser)
         finally:
             await browser.close()
     print("v2 browser tests passed")
