@@ -1,7 +1,13 @@
-import { CONFIG_VERSIONS, MAX_ASSISTANT_CODE_POINTS, countCodePoints } from "./constants";
+import {
+	CONFIG_VERSIONS,
+	MAX_ASSISTANT_CODE_POINTS,
+	MAX_USER_CODE_POINTS,
+	countCodePoints,
+} from "./constants";
 import type {
 	ChatDoneEvent,
 	ChatHistoryItem,
+	ChatMetaEvent,
 	PartnerThemeId,
 	SessionResponse,
 	StudyCondition,
@@ -258,7 +264,7 @@ interface ChatRequestOptions {
 	historyTag: string;
 	turn: { id: string; userMessage: string };
 	signal?: AbortSignal;
-	onMeta: () => void;
+	onMeta: (meta: ChatMetaEvent) => void;
 	onDelta: (text: string) => void;
 }
 
@@ -346,7 +352,27 @@ async function consumeSse(
 				);
 			}
 			receivedMeta = true;
-			options.onMeta();
+			let scrubbedUserMessage: string | undefined;
+			if (data.scrubbedUserMessage !== undefined) {
+				// The server signs exactly this text into the turn's history; a
+				// malformed value must fail the stream, because silently keeping
+				// the raw text would desynchronize the next turn's signed echo.
+				if (
+					typeof data.scrubbedUserMessage !== "string" ||
+					data.scrubbedUserMessage.length === 0 ||
+					countCodePoints(data.scrubbedUserMessage) > MAX_USER_CODE_POINTS
+				) {
+					throw new ParticipantSafeError(
+						"stream_invalid_meta",
+						"The answer could not be verified. You can try again.",
+						true,
+					);
+				}
+				scrubbedUserMessage = data.scrubbedUserMessage;
+			}
+			options.onMeta(
+				scrubbedUserMessage === undefined ? {} : { scrubbedUserMessage },
+			);
 			return;
 		}
 		if (!receivedMeta) {

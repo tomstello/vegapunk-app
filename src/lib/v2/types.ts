@@ -182,6 +182,13 @@ export interface ChatHistoryItem {
 	content: string;
 }
 
+export interface ChatMetaEvent {
+	// Server-canonical (redacted) text for the just-sent user turn. Present
+	// exactly when the active revision runs the redaction screen; absent on
+	// older revisions, whose servers sign the raw text unchanged.
+	scrubbedUserMessage?: string;
+}
+
 export interface ChatDoneEvent {
 	v: 2;
 	sequence: number;

@@ -38,6 +38,7 @@
 		readPersistedState,
 	} from "./storage";
 	import {
+		canonicalView,
 		canStartUserTurn,
 		canRetryAssistant,
 		serializeSnapshot,
@@ -132,6 +133,21 @@
 	let presentationTimer: number | undefined;
 	let presentationDrainTimer: number | undefined;
 	let resolvePresentationDrain: (() => void) | null = null;
+	// Turns whose user text has not yet been replaced by the server-canonical
+	// (redacted) version from the stream's meta event. Every serialization
+	// flows through canonicalView with this set, so raw text never reaches
+	// sessionStorage messages, the parent snapshot, or a checkpoint body.
+	// Retired (skipped/ended) turns stay in the set permanently.
+	let pendingCanonicalTurnIds: ReadonlySet<string> = new Set();
+	// The participant's own typed text, keyed by turnId, for their bubble
+	// only. Component memory — never on the message object, never serialized.
+	// Set to false to show the redacted text after meta instead (the
+	// transparent-swap variant); this constant is the entire difference.
+	const KEEP_RAW_DISPLAY = true;
+	let presentedUserContents: Record<string, string> = {};
+	// Set when the deferred meta-time capture fails and the request is
+	// aborted so the participant gets their question back in the composer.
+	let abortedForCaptureFailure = false;
 
 	$: userTurnCount =
 		state?.messages.filter(
@@ -777,14 +793,18 @@
 
 	function persistNow(): void {
 		if (!state) return;
+		// Persist and clone only the canonical view: a raw not-yet-redacted
+		// turn must never reach sessionStorage as a message, and a rollback to
+		// lastSafeState must never resurrect one into a committed artifact.
+		const view = canonicalView(state, pendingCanonicalTurnIds);
 		try {
-			if (!transcriptFits(serializeSnapshot(state))) return;
-			lastSafeState = cloneState(state);
+			if (!transcriptFits(serializeSnapshot(view))) return;
+			lastSafeState = cloneState(view);
 		} catch {
 			return;
 		}
 		if (!storageWritable) return;
-		const failure = persistState(state);
+		const failure = persistState(view);
 		if (failure) {
 			storageWritable = false;
 			state = appendCaptureError(state, failure);
@@ -815,7 +835,9 @@
 		};
 		let serialized: SerializedSnapshot;
 		try {
-			serialized = serializeSnapshot(candidateState);
+			// In-memory state keeps the full conversation (raw bubble included);
+			// the parent snapshot and checkpoint body get the canonical view.
+			serialized = serializeSnapshot(canonicalView(candidateState, pendingCanonicalTurnIds));
 			if (!transcriptFits(serialized)) throw new Error("transcript_capacity_exceeded");
 		} catch {
 			state = cloneState(lastSafeState ?? baseState);
@@ -1040,16 +1062,19 @@
 			}],
 		};
 		draftInput = "";
-			transcriptRevision += 1;
-			bridge?.sendActivity("submit");
-			followStream = true;
-			const userCapture = commitSnapshot("user_submitted", { terminal: false, checkpoint: true });
-		if (!userCapture) {
-			draftInput = state.draft;
-			lastParticipantError = "Your question could not be safely captured, so it was not sent to the answer service.";
-			persistNow();
-			return;
+		transcriptRevision += 1;
+		// The raw turn stays out of every persisted artifact until the server
+		// returns its canonical (redacted) text in the stream's meta event;
+		// the deferred "user_submitted" capture fires in the meta handler.
+		// Until then the persisted canonical view parks the question as a
+		// browser-local draft so a reload restores it to the composer.
+		pendingCanonicalTurnIds = new Set([...pendingCanonicalTurnIds, turnId]);
+		if (KEEP_RAW_DISPLAY) {
+			presentedUserContents = { ...presentedUserContents, [turnId]: content };
 		}
+		bridge?.sendActivity("submit");
+		followStream = true;
+		persistNow();
 		await scrollToLatest(true);
 		await executeTurn(turnId, content, false);
 	}
@@ -1114,7 +1139,41 @@
 				historyTag: state.historyTag,
 				turn: { id: turnId, userMessage },
 				signal: activeRequest.signal,
-				onMeta: () => undefined,
+				onMeta: (meta) => {
+					if (!state || state.lifecycle === "completed" || state.chatEndISO) return;
+					const canonical = meta.scrubbedUserMessage;
+					if (typeof canonical === "string") {
+						// The server signs exactly this text at `done`; the stored
+						// turn must match it byte-for-byte — on first sends and on
+						// retries (a retry re-redacts and re-signs its own output).
+						const current = state.messages.find(
+							(message) => message.role === "user" && message.turnId === turnId,
+						);
+						if (current && current.content !== canonical) {
+							state = {
+								...state,
+								messages: state.messages.map((message) =>
+									message.role === "user" && message.turnId === turnId
+										? { ...message, content: canonical }
+										: message,
+								),
+							};
+							transcriptRevision += 1;
+						}
+					}
+					if (pendingCanonicalTurnIds.has(turnId)) {
+						pendingCanonicalTurnIds = new Set(
+							[...pendingCanonicalTurnIds].filter((id) => id !== turnId),
+						);
+						transcriptRevision += 1;
+						// Deferred "user_submitted" capture: the turn enters the
+						// persisted record only now, in its canonical form.
+						if (!commitSnapshot("user_submitted", { terminal: false, checkpoint: true })) {
+							abortedForCaptureFailure = true;
+							activeRequest?.abort();
+						}
+					}
+				},
 				onDelta: (delta) => {
 					if (!state || state.lifecycle === "completed" || state.chatEndISO) return;
 					const answer = state.messages.find((message) => message.id === assistantLocalId);
@@ -1160,6 +1219,22 @@
 				recoverAssistantAfterCaptureFailure(assistantLocalId, turnId, "assistant_completion_capture_failed");
 			}
 		} catch (error) {
+			if (abortedForCaptureFailure) {
+				abortedForCaptureFailure = false;
+				// The deferred meta-time capture failed; commitSnapshot already
+				// rolled state back to the canonical pre-turn copy with the raw
+				// question parked as the draft. Restore the composer instead of
+				// surfacing an interrupted-answer card for a turn the record
+				// never held.
+				if (state && !state.chatEndISO) {
+					state = { ...state, lifecycle: "ready" };
+					draftInput = state.draft;
+					lastParticipantError =
+						"Your question could not be safely captured, so it was not sent to the answer service.";
+					persistNow();
+				}
+				return;
+			}
 			if (!state || state.lifecycle === "completed" || state.chatEndISO) return;
 			flushStreamPresentation();
 			const safeError = error instanceof ParticipantSafeError
@@ -1539,7 +1614,7 @@
 								</article>
 							</div>
 					{:else}
-						<article class="user-message"><p>{message.content}</p></article>
+						<article class="user-message"><p>{(KEEP_RAW_DISPLAY && message.turnId && presentedUserContents[message.turnId]) || message.content}</p></article>
 					{/if}
 				{/each}
 

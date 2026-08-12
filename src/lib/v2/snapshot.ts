@@ -142,6 +142,51 @@ export function transcriptFits(serialized: SerializedSnapshot): boolean {
 	);
 }
 
+/**
+ * The serialization-facing view of client state while user turns await their
+ * server-canonical (redacted) text from the chat stream's meta event.
+ *
+ * Every persisted or transmitted artifact (sessionStorage state, parent
+ * snapshot, checkpoint body, rollback clone) must be built from this view so
+ * raw participant text never leaves component memory before redaction. The
+ * excluded turn's raw text is parked in `draft` — browser-local by design —
+ * so a reload puts the question back in the composer instead of losing it.
+ * The filtered view is the consistent pre-turn conversation, so a non-
+ * terminal in-flight lifecycle maps back to "ready"; terminal states are
+ * preserved so an end-of-chat capture stays terminal.
+ *
+ * Identity when no turn is pending: the streaming hot path pays nothing.
+ */
+export function canonicalView(
+	state: V2PersistedState,
+	pendingTurnIds: ReadonlySet<string>,
+): V2PersistedState {
+	if (pendingTurnIds.size === 0) return state;
+	const isPending = (message: V2Message): boolean =>
+		message.turnId !== undefined && pendingTurnIds.has(message.turnId);
+	const excluded = state.messages.filter(isPending);
+	if (excluded.length === 0) return state;
+	const messages = state.messages.filter((message) => !isPending(message));
+	// The newest still-live pending user turn (not one retired by Skip) is the
+	// participant's active question; keep its raw text recoverable as a draft.
+	const liveUser = [...excluded]
+		.reverse()
+		.find((message) => message.role === "user" && !message.excludedFromModel);
+	const lifecycle =
+		state.chatEndISO === null &&
+		(state.lifecycle === "waiting" ||
+			state.lifecycle === "streaming" ||
+			state.lifecycle === "interrupted")
+			? "ready"
+			: state.lifecycle;
+	return {
+		...state,
+		messages,
+		draft: liveUser ? liveUser.content : state.draft,
+		lifecycle,
+	};
+}
+
 export function checkpointBodyFits(
 	state: V2PersistedState,
 	serialized: SerializedSnapshot,
