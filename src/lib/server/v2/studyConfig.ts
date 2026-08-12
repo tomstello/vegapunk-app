@@ -476,19 +476,14 @@ If nothing needs redaction: {"spans":[]}
 If the new message clearly refers to the same person or place as an existing placeholder, add "reuse": <that placeholder's number> to the span. When unsure, omit "reuse" and a new number will be assigned.
 Accuracy of the "text" field is critical: every value must appear verbatim in newUserMessage or the report is rejected. Prefer reporting a span when uncertain whether something identifies a person; missing real identifying information is worse than an extra redaction.`;
 
-const SCRUBBER_V1_MODEL: ScrubberModel = Object.freeze({
-	name: 'anthropic/claude-sonnet-5',
-	baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
-	provider: SCRUBBER_SONNET5_US_ZDR_PROVIDER_POLICY,
-	maxTokens: 1_200,
-	reasoning: { effort: 'low', exclude: true } as const
-});
-
-// Cross-vendor secondary: the only Flash-family model with a US-resident ZDR
-// route on the 2026-08-12 endpoint feed (gemini-2.5-flash has no /us tag at
-// all). Vertex-US advertises temperature for this model, so the fallback
-// pins temperature 0 for deterministic extraction.
-const SCRUBBER_V1_FALLBACK_MODEL: ScrubberModel = Object.freeze({
+// PRIMARY (research-team decision 2026-08-12, latency-first): the only
+// Flash-family model with a US-resident ZDR route on the 2026-08-12 feed
+// (gemini-2.5-flash has no /us tag at all). Planted-PII eval: recall 1.00,
+// precision 1.00, p50 0.75s / p95 1.1s — 2.3x faster than Sonnet 5 at equal
+// quality. Vertex-US advertises temperature; 0 pins deterministic extraction.
+// Its single US route is acceptable because the cross-vendor Sonnet fallback
+// (two US routes) rescues any turn the primary cannot serve.
+const SCRUBBER_V1_PRIMARY_MODEL: ScrubberModel = Object.freeze({
 	name: 'google/gemini-3.1-flash-lite',
 	baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
 	provider: Object.freeze({
@@ -502,8 +497,18 @@ const SCRUBBER_V1_FALLBACK_MODEL: ScrubberModel = Object.freeze({
 	temperature: 0 as const
 });
 
+// Cross-vendor secondary on the exact two US-ZDR routes already validated
+// and canaried for Opus 5. Eval: recall 1.00, precision 1.00, p95 2.8s.
+const SCRUBBER_V1_FALLBACK_MODEL: ScrubberModel = Object.freeze({
+	name: 'anthropic/claude-sonnet-5',
+	baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
+	provider: SCRUBBER_SONNET5_US_ZDR_PROVIDER_POLICY,
+	maxTokens: 1_200,
+	reasoning: { effort: 'low', exclude: true } as const
+});
+
 const SCRUBBER_V1: ScrubberConfig = Object.freeze({
-	model: SCRUBBER_V1_MODEL,
+	model: SCRUBBER_V1_PRIMARY_MODEL,
 	fallbackModel: SCRUBBER_V1_FALLBACK_MODEL,
 	prompt: SCRUBBER_PROMPT_V1,
 	categories: SCRUB_CATEGORIES_V1,
