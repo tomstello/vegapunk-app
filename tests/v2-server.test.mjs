@@ -12,6 +12,7 @@ let checkpoint;
 let openrouter;
 let crypto;
 let http;
+let scrubber;
 
 async function loadServerModule(relativePath) {
 	const entryPoint = fileURLToPath(new URL(`../${relativePath}`, import.meta.url));
@@ -43,14 +44,15 @@ async function loadServerModule(relativePath) {
 }
 
 before(async () => {
-	[tokens, schemas, configs, checkpoint, openrouter, crypto, http] = await Promise.all([
+	[tokens, schemas, configs, checkpoint, openrouter, crypto, http, scrubber] = await Promise.all([
 		loadServerModule('src/lib/server/v2/tokens.ts'),
 		loadServerModule('src/lib/server/v2/schemas.ts'),
 		loadServerModule('src/lib/server/v2/studyConfig.ts'),
 		loadServerModule('src/lib/server/v2/qualtricsCheckpoint.ts'),
 		loadServerModule('src/lib/server/v2/openrouter.ts'),
 		loadServerModule('src/lib/server/v2/crypto.ts'),
-		loadServerModule('src/lib/server/v2/http.ts')
+		loadServerModule('src/lib/server/v2/http.ts'),
+		loadServerModule('src/lib/server/v2/scrubber.ts')
 	]);
 });
 
@@ -1064,4 +1066,321 @@ test('oversized delimiter-free provider SSE is bounded and returns a typed start
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
+});
+
+const TEST_SCRUB_CATEGORIES = Object.freeze(['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB', 'CITY']);
+const TEST_SCRUBBER = Object.freeze({
+	model: {
+		name: 'anthropic/claude-sonnet-5',
+		baseUrl: 'https://openrouter.invalid/api/v1/chat/completions',
+		provider: {
+			only: ['google-vertex/us', 'amazon-bedrock/us-east-1'],
+			zdr: true,
+			data_collection: 'deny',
+			allow_fallbacks: true,
+			require_parameters: true
+		},
+		maxTokens: 1_200,
+		reasoning: { effort: 'low', exclude: true }
+	},
+	prompt: 'unit-test scrubber prompt',
+	categories: TEST_SCRUB_CATEGORIES,
+	timeoutMs: 2_000,
+	maxAttempts: 2
+});
+
+function scrubProviderResponse(spans) {
+	return new Response(
+		JSON.stringify({ choices: [{ message: { content: JSON.stringify({ spans }) }, finish_reason: 'stop' }] }),
+		{ status: 200, headers: { 'content-type': 'application/json' } }
+	);
+}
+
+test('applySpans replaces verbatim spans deterministically and continues numbering', () => {
+	const applied = scrubber.applySpans(
+		'My name is Jane Doe and Jane asked about Boise',
+		[
+			{ text: 'Jane Doe', category: 'NAME' },
+			{ text: 'Jane', category: 'NAME' },
+			{ text: 'Boise', category: 'CITY' }
+		],
+		TEST_SCRUB_CATEGORIES,
+		{ NAME: 1 }
+	);
+	assert.equal(applied.text, 'My name is [NAME_2] and [NAME_3] asked about [CITY_1]');
+	assert.equal(applied.spanCount, 3);
+
+	const repeated = scrubber.applySpans(
+		'call 5551234 or 5551234 today',
+		[{ text: '5551234', category: 'PHONE' }],
+		TEST_SCRUB_CATEGORIES,
+		{}
+	);
+	assert.equal(repeated.text, 'call [PHONE_1] or [PHONE_1] today');
+	assert.equal(repeated.spanCount, 2);
+});
+
+test('applySpans honors valid reuse indices and drops placeholder-shaped spans', () => {
+	const reused = scrubber.applySpans(
+		'anything else in Boise?',
+		[{ text: 'Boise', category: 'CITY', reuse: 1 }],
+		TEST_SCRUB_CATEGORIES,
+		{ CITY: 2 }
+	);
+	assert.equal(reused.text, 'anything else in [CITY_1]?');
+
+	const invalidReuse = scrubber.applySpans(
+		'anything else in Boise?',
+		[{ text: 'Boise', category: 'CITY', reuse: 9 }],
+		TEST_SCRUB_CATEGORIES,
+		{ CITY: 2 }
+	);
+	assert.equal(invalidReuse.text, 'anything else in [CITY_3]?');
+
+	const placeholderShaped = scrubber.applySpans(
+		'you noted [NAME_1] earlier',
+		[{ text: '[NAME_1]', category: 'NAME' }],
+		TEST_SCRUB_CATEGORIES,
+		{ NAME: 1 }
+	);
+	assert.equal(placeholderShaped.text, 'you noted [NAME_1] earlier');
+	assert.equal(placeholderShaped.spanCount, 0);
+});
+
+test('applySpans rejects unfaithful or unsafe reports fail-closed', () => {
+	assert.throws(
+		() => scrubber.applySpans('no such text here', [{ text: 'Jane', category: 'NAME' }], TEST_SCRUB_CATEGORIES, {}),
+		(error) => error instanceof scrubber.ScrubberError && error.code === 'scrub_invalid_output' && error.retryable === true
+	);
+	assert.throws(
+		() => scrubber.applySpans(
+			'Jane asked',
+			[{ text: 'Jane', category: 'NAME' }, { text: 'Jane', category: 'CITY' }],
+			TEST_SCRUB_CATEGORIES,
+			{}
+		),
+		(error) => error instanceof scrubber.ScrubberError && error.code === 'scrub_invalid_output'
+	);
+	assert.throws(
+		() => scrubber.applySpans('Jane asked', [{ text: 'Jane', category: 'SECRET' }], TEST_SCRUB_CATEGORIES, {}),
+		(error) => error instanceof scrubber.ScrubberError && error.code === 'scrub_invalid_output'
+	);
+	const nearLimit = 'q' + 'x'.repeat(1_498);
+	assert.throws(
+		() => scrubber.applySpans(nearLimit, [{ text: 'q', category: 'NAME' }], TEST_SCRUB_CATEGORIES, {}),
+		(error) => error instanceof scrubber.ScrubberError && error.code === 'scrub_length' && error.retryable === false
+	);
+});
+
+test('placeholderInventory reads only known categories from redacted history', () => {
+	const inventory = scrubber.placeholderInventory(
+		[
+			{ id: '1', role: 'user', content: 'I am [NAME_2] near [CITY_1]' },
+			{ id: '2', role: 'assistant', content: 'Thanks [NAME_2]; also [UNKNOWN_9] and [NAME_1]' }
+		],
+		TEST_SCRUB_CATEGORIES
+	);
+	assert.deepEqual(inventory, { NAME: 2, CITY: 1 });
+});
+
+test('scrubUserMessage sends the strict scrub request and applies the report', async () => {
+	const originalFetch = globalThis.fetch;
+	const requests = [];
+	globalThis.fetch = async (_url, init) => {
+		requests.push(JSON.parse(String(init.body)));
+		return scrubProviderResponse([{ text: 'Jane Doe', category: 'NAME' }]);
+	};
+	try {
+		const result = await scrubber.scrubUserMessage({
+			scrubber: TEST_SCRUBBER,
+			history: [
+				{ id: 'u1', role: 'user', content: 'my friend is [NAME_1]' },
+				{ id: 'a1', role: 'assistant', content: 'Understood.' }
+			],
+			userMessage: 'My name is Jane Doe.',
+			apiKey: 'unit-test-key',
+			clientSignal: new AbortController().signal
+		});
+		assert.equal(result.text, 'My name is [NAME_2].');
+		assert.equal(result.spanCount, 1);
+		assert.equal(result.attempts, 1);
+		assert.equal(requests.length, 1);
+		const body = requests[0];
+		assert.equal(body.model, 'anthropic/claude-sonnet-5');
+		assert.equal(body.stream, false);
+		assert.equal(body.max_tokens, 1_200);
+		assert.deepEqual(body.reasoning, { effort: 'low', exclude: true });
+		assert.deepEqual(body.provider, TEST_SCRUBBER.model.provider);
+		assert.equal('temperature' in body, false);
+		assert.equal('session_id' in body, false);
+		assert.equal(body.messages[0].role, 'system');
+		assert.equal(body.messages[0].content, 'unit-test scrubber prompt');
+		assert.equal(body.messages[1].role, 'user');
+		const input = JSON.parse(body.messages[1].content);
+		assert.deepEqual(Object.keys(input).sort(), ['newUserMessage', 'recentUserTurns', 'usedPlaceholders']);
+		assert.deepEqual(input.usedPlaceholders, { NAME: 1 });
+		assert.deepEqual(input.recentUserTurns, ['my friend is [NAME_1]']);
+		assert.equal(input.newUserMessage, 'My name is Jane Doe.');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('scrubUserMessage passes clean messages through unchanged', async () => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () => scrubProviderResponse([]);
+	try {
+		const result = await scrubber.scrubUserMessage({
+			scrubber: TEST_SCRUBBER,
+			history: [],
+			userMessage: 'Is the flu shot safe for people over 65?',
+			apiKey: 'unit-test-key',
+			clientSignal: new AbortController().signal
+		});
+		assert.equal(result.text, 'Is the flu shot safe for people over 65?');
+		assert.equal(result.spanCount, 0);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('scrubUserMessage retries malformed output once and accepts fenced JSON', async () => {
+	const originalFetch = globalThis.fetch;
+	let calls = 0;
+	globalThis.fetch = async () => {
+		calls += 1;
+		if (calls === 1) {
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: 'sorry, no JSON today' }, finish_reason: 'stop' }] }),
+				{ status: 200, headers: { 'content-type': 'application/json' } }
+			);
+		}
+		return new Response(
+			JSON.stringify({
+				choices: [{ message: { content: '```json\n{"spans":[]}\n```' }, finish_reason: 'stop' }]
+			}),
+			{ status: 200, headers: { 'content-type': 'application/json' } }
+		);
+	};
+	try {
+		const result = await scrubber.scrubUserMessage({
+			scrubber: TEST_SCRUBBER,
+			history: [],
+			userMessage: 'plain question',
+			apiKey: 'unit-test-key',
+			clientSignal: new AbortController().signal
+		});
+		assert.equal(result.attempts, 2);
+		assert.equal(result.text, 'plain question');
+		assert.equal(calls, 2);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('scrubUserMessage fails closed after exhausted retries and on non-retryable HTTP status', async () => {
+	const originalFetch = globalThis.fetch;
+	let calls = 0;
+	globalThis.fetch = async () => {
+		calls += 1;
+		return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+	};
+	try {
+		await assert.rejects(
+			scrubber.scrubUserMessage({
+				scrubber: TEST_SCRUBBER,
+				history: [],
+				userMessage: 'question',
+				apiKey: 'unit-test-key',
+				clientSignal: new AbortController().signal
+			}),
+			(error) => error instanceof scrubber.ScrubberError && error.code === 'scrub_invalid_output' && error.retryable === true
+		);
+		assert.equal(calls, 2);
+
+		calls = 0;
+		globalThis.fetch = async () => {
+			calls += 1;
+			return new Response('denied', { status: 403 });
+		};
+		await assert.rejects(
+			scrubber.scrubUserMessage({
+				scrubber: TEST_SCRUBBER,
+				history: [],
+				userMessage: 'question',
+				apiKey: 'unit-test-key',
+				clientSignal: new AbortController().signal
+			}),
+			(error) => error instanceof scrubber.ScrubberError && error.code === 'scrub_unavailable' && error.retryable === false
+		);
+		assert.equal(calls, 1);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('scrubUserMessage recovers from a retryable HTTP failure and times out fail-closed', async () => {
+	const originalFetch = globalThis.fetch;
+	let calls = 0;
+	globalThis.fetch = async () => {
+		calls += 1;
+		if (calls === 1) return new Response('busy', { status: 503 });
+		return scrubProviderResponse([]);
+	};
+	try {
+		const result = await scrubber.scrubUserMessage({
+			scrubber: TEST_SCRUBBER,
+			history: [],
+			userMessage: 'question',
+			apiKey: 'unit-test-key',
+			clientSignal: new AbortController().signal
+		});
+		assert.equal(result.attempts, 2);
+		assert.equal(calls, 2);
+
+		globalThis.fetch = (_url, init) =>
+			new Promise((_resolve, reject) => {
+				init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+			});
+		await assert.rejects(
+			scrubber.scrubUserMessage({
+				scrubber: { ...TEST_SCRUBBER, timeoutMs: 25, maxAttempts: 1 },
+				history: [],
+				userMessage: 'question',
+				apiKey: 'unit-test-key',
+				clientSignal: new AbortController().signal
+			}),
+			(error) => error instanceof scrubber.ScrubberError && error.code === 'scrub_timeout' && error.retryable === true
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('chat route redacts before the relay and signs only the canonical text', async () => {
+	const source = await readFile(
+		fileURLToPath(new URL('../src/routes/api/v2/chat/+server.ts', import.meta.url)),
+		'utf8'
+	);
+	const contextGuardAt = source.indexOf('MAX_CONTEXT_UTF8_BYTES)');
+	const scrubCallAt = source.indexOf('await scrubUserMessage({');
+	const relayAt = source.indexOf('await startOpenRouterStream({');
+	assert.ok(contextGuardAt > 0 && scrubCallAt > 0 && relayAt > 0, 'expected route landmarks');
+	assert.ok(contextGuardAt < scrubCallAt, 'scrub must run after request validation');
+	assert.ok(scrubCallAt < relayAt, 'scrub must complete before the provider relay');
+	assert.ok(source.includes('userMessage: canonicalUserMessage'), 'relay must send the canonical text');
+	assert.equal(
+		(source.match(/content: canonicalUserMessage/g) ?? []).length,
+		2,
+		'both completedHistory sites must sign the canonical text'
+	);
+	assert.equal(
+		source.includes("role: 'user', content: body.turn.userMessage"),
+		false,
+		'no history entry may sign the raw turn'
+	);
+	assert.ok(
+		source.includes('scrubbedUserMessage: canonicalUserMessage'),
+		'meta must deliver the canonical turn text to the client'
+	);
 });

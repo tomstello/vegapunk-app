@@ -741,3 +741,228 @@ test('a definitive failure drops stale pending work but permits a later lifecycl
 		globalThis.fetch = originalFetch;
 	}
 });
+
+test('canonicalView excludes pending turns and yields a resumable canonical prefix', async () => {
+	const snapshot = await loadClientModule('src/lib/v2/snapshot.ts');
+	const { now, state, initial } = fixtureFactory();
+	const base = state();
+	const liveTurnId = crypto.randomUUID();
+	const retiredTurnId = crypto.randomUUID();
+	base.lifecycle = 'streaming';
+	base.messages = [
+		initial('welcome'),
+		{
+			id: retiredTurnId,
+			turnId: retiredTurnId,
+			role: 'user',
+			content: 'retired raw question',
+			createdAtISO: now,
+			isInitial: false,
+			completionStatus: 'complete',
+			excludedFromModel: true
+		},
+		{
+			id: crypto.randomUUID(),
+			turnId: retiredTurnId,
+			role: 'assistant',
+			content: '',
+			createdAtISO: now,
+			isInitial: false,
+			completionStatus: 'skipped',
+			excludedFromModel: true
+		},
+		{
+			id: liveTurnId,
+			turnId: liveTurnId,
+			role: 'user',
+			content: 'My name is Jane Doe',
+			createdAtISO: now,
+			isInitial: false,
+			completionStatus: 'complete',
+			excludedFromModel: false
+		},
+		{
+			id: crypto.randomUUID(),
+			turnId: liveTurnId,
+			role: 'assistant',
+			content: '',
+			createdAtISO: now,
+			isInitial: false,
+			completionStatus: 'streaming',
+			excludedFromModel: true
+		}
+	];
+	const pending = new Set([liveTurnId, retiredTurnId]);
+
+	const view = snapshot.canonicalView(base, pending);
+	assert.equal(view.messages.length, 1);
+	assert.equal(view.messages[0].isInitial, true);
+	assert.equal(view.draft, 'My name is Jane Doe');
+	assert.equal(view.lifecycle, 'ready');
+	assert.equal(JSON.stringify(view).includes('retired raw question'), false);
+	assert.equal(JSON.stringify(view.messages).includes('Jane Doe'), false);
+
+	const serialized = snapshot.serializeSnapshot(view);
+	assert.equal(serialized.snapshot.counters.totalMessages, 1);
+	assert.equal(serialized.snapshot.counters.userMessages, 0);
+	assert.equal(snapshot.transcriptFits(serialized), true);
+
+	assert.equal(snapshot.canonicalView(base, new Set()), base, 'identity when nothing is pending');
+
+	const terminal = { ...base, lifecycle: 'completed', chatEndISO: now, terminalReason: 'completed' };
+	const terminalView = snapshot.canonicalView(terminal, pending);
+	assert.equal(terminalView.lifecycle, 'completed', 'terminal captures stay terminal');
+	assert.equal(terminalView.chatEndISO, now);
+	assert.equal(terminalView.messages.length, 1);
+});
+
+test('a canonical prefix reload does not synthesize a retryable turn', async () => {
+	const snapshot = await loadClientModule('src/lib/v2/snapshot.ts');
+	const recovery = await loadClientModule('src/lib/v2/recovery.ts');
+	const { now, state, initial } = fixtureFactory();
+	const base = state();
+	const turnId = crypto.randomUUID();
+	base.lifecycle = 'waiting';
+	base.messages = [
+		initial('welcome'),
+		{
+			id: turnId,
+			turnId,
+			role: 'user',
+			content: 'raw question awaiting redaction',
+			createdAtISO: now,
+			isInitial: false,
+			completionStatus: 'complete',
+			excludedFromModel: false
+		}
+	];
+	const view = snapshot.canonicalView(base, new Set([turnId]));
+	const restored = recovery.restoreInterruptedTurn(
+		view,
+		() => '99999999-9999-4999-8999-999999999999',
+		() => now
+	);
+	assert.equal(restored.lifecycle, 'ready');
+	assert.equal(restored.messages.length, 1);
+	assert.equal(restored.draft, 'raw question awaiting redaction');
+});
+
+function sseChatResponse(events) {
+	const payload = events
+		.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+		.join('');
+	return new Response(payload, {
+		status: 200,
+		headers: { 'content-type': 'text/event-stream' }
+	});
+}
+
+test('meta canonical text is validated hard and old-revision meta stays legal', async () => {
+	const api = await loadClientModule('src/lib/v2/api.ts');
+	const originalWindow = globalThis.window;
+	const originalFetch = globalThis.fetch;
+	globalThis.window = {
+		setTimeout: (...args) => setTimeout(...args),
+		clearTimeout: (...args) => clearTimeout(...args)
+	};
+	const doneEvent = {
+		v: 2,
+		sequence: 1,
+		historyTag: 'history-tag-from-server-for-meta-test-1234567890',
+		assistantMessageId: '88888888-8888-4888-8888-888888888888',
+		finishReason: 'stop',
+		completionStatus: 'complete'
+	};
+	const baseOptions = () => ({
+		token: 'session-token-for-meta-test-1234567890',
+		sequence: 1,
+		history: [],
+		historyTag: 'prior-history-tag-for-meta-test-1234567890',
+		turn: { id: '77777777-7777-4777-8777-777777777777', userMessage: 'My name is Jane Doe' },
+		onDelta: () => {}
+	});
+	try {
+		const metas = [];
+		globalThis.fetch = async () =>
+			sseChatResponse([
+				['meta', { v: 2, sequence: 1, scrubbedUserMessage: 'My name is [NAME_1]' }],
+				['delta', { v: 2, text: 'Hello' }],
+				['done', doneEvent]
+			]);
+		const done = await api.streamChat({
+			...baseOptions(),
+			onMeta: (meta) => metas.push(meta)
+		});
+		assert.equal(done.historyTag, doneEvent.historyTag);
+		assert.deepEqual(metas, [{ scrubbedUserMessage: 'My name is [NAME_1]' }]);
+
+		const bareMetas = [];
+		globalThis.fetch = async () =>
+			sseChatResponse([
+				['meta', { v: 2, sequence: 1 }],
+				['delta', { v: 2, text: 'Hello' }],
+				['done', doneEvent]
+			]);
+		await api.streamChat({ ...baseOptions(), onMeta: (meta) => bareMetas.push(meta) });
+		assert.equal(bareMetas.length, 1);
+		assert.equal('scrubbedUserMessage' in bareMetas[0], false);
+
+		for (const invalid of ['', 'x'.repeat(1_501), 42]) {
+			globalThis.fetch = async () =>
+				sseChatResponse([
+					['meta', { v: 2, sequence: 1, scrubbedUserMessage: invalid }],
+					['done', doneEvent]
+				]);
+			await assert.rejects(
+				api.streamChat({ ...baseOptions(), onMeta: () => {} }),
+				(error) => error.code === 'stream_invalid_meta' && error.retryable === true
+			);
+		}
+	} finally {
+		globalThis.window = originalWindow;
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('raw user turns are never persisted before canonicalization', async () => {
+	const source = await readFile(
+		fileURLToPath(new URL('../src/lib/v2/V2Chat.svelte', import.meta.url)),
+		'utf8'
+	);
+	const submitBody = source.slice(
+		source.indexOf('async function submitQuestion'),
+		source.indexOf('async function executeTurn')
+	);
+	assert.equal(
+		submitBody.includes('commitSnapshot("user_submitted"'),
+		false,
+		'submit must not capture the raw turn'
+	);
+	assert.ok(submitBody.includes('pendingCanonicalTurnIds = new Set(['));
+
+	const executeBody = source.slice(
+		source.indexOf('async function executeTurn'),
+		source.indexOf('function findLatestFailedAssistant')
+	);
+	const swapAt = executeBody.indexOf('content: canonical');
+	const clearAt = executeBody.indexOf('.filter((id) => id !== turnId)');
+	const deferredCommitAt = executeBody.indexOf('commitSnapshot("user_submitted"');
+	assert.ok(swapAt > 0, 'meta handler must adopt the canonical text');
+	assert.ok(clearAt > swapAt, 'pending clears only after the content swap');
+	assert.ok(deferredCommitAt > clearAt, 'deferred capture fires after the pending clear');
+
+	const persistBody = source.slice(
+		source.indexOf('function persistNow'),
+		source.indexOf('function recordCaptureError')
+	);
+	assert.ok(persistBody.includes('canonicalView(state, pendingCanonicalTurnIds)'));
+	assert.equal(persistBody.includes('serializeSnapshot(state)'), false);
+	assert.equal(persistBody.includes('persistState(state)'), false);
+
+	const commitBody = source.slice(
+		source.indexOf('function commitSnapshot'),
+		source.indexOf('function handleParentAck')
+	);
+	assert.ok(commitBody.includes('canonicalView(candidateState, pendingCanonicalTurnIds)'));
+	assert.equal(commitBody.includes('serializeSnapshot(candidateState)'), false);
+});
