@@ -1,13 +1,22 @@
-import { ENCRYPTION_IV, ENCRYPTION_KEY } from "$env/static/private";
+import { env } from '$env/dynamic/private';
 import { logger } from '$lib/logger';
 import type { RequestHandler } from './$types';
 import { encrypt } from './utils';
 
 export const POST: RequestHandler = (async ({ request }): Promise<Response> => {
+	if (env.ENABLE_LEGACY_V1 !== 'true') {
+		return new Response(JSON.stringify({ error: 'legacy_crypto_retired' }), {
+			status: 410,
+			headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }
+		});
+	}
 	try {
+		if (!env.ENCRYPTION_KEY || !env.ENCRYPTION_IV) {
+			return new Response('Legacy encryption is not configured', { status: 503 });
+		}
 		const response = await request.json();
 		const { text } = response;
-		const ciphertext = encrypt(ENCRYPTION_KEY, ENCRYPTION_IV, text);
+		const ciphertext = encrypt(env.ENCRYPTION_KEY, env.ENCRYPTION_IV, text);
 		return new Response(JSON.stringify({
 			ciphertext
 		}), { status: 200, headers: { 'Content-Type': 'application/json' } });

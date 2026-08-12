@@ -1,0 +1,1006 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { before, test } from 'node:test';
+import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
+
+let tokens;
+let schemas;
+let configs;
+let checkpoint;
+let openrouter;
+let crypto;
+let http;
+
+async function loadServerModule(relativePath) {
+	const entryPoint = fileURLToPath(new URL(`../${relativePath}`, import.meta.url));
+	const result = await build({
+		entryPoints: [entryPoint],
+		bundle: true,
+		format: 'esm',
+		platform: 'node',
+		write: false,
+		logLevel: 'silent',
+		plugins: [
+			{
+				name: 'unit-test-private-env',
+				setup(esbuild) {
+					esbuild.onResolve({ filter: /^\$env\/dynamic\/private$/ }, () => ({
+						path: 'unit-test-private-env',
+						namespace: 'unit-test'
+					}));
+					esbuild.onLoad({ filter: /.*/, namespace: 'unit-test' }, () => ({
+						contents: 'export const env = {};',
+						loader: 'js'
+					}));
+				}
+			}
+		]
+	});
+	const source = result.outputFiles[0].text;
+	return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+}
+
+before(async () => {
+	[tokens, schemas, configs, checkpoint, openrouter, crypto, http] = await Promise.all([
+		loadServerModule('src/lib/server/v2/tokens.ts'),
+		loadServerModule('src/lib/server/v2/schemas.ts'),
+		loadServerModule('src/lib/server/v2/studyConfig.ts'),
+		loadServerModule('src/lib/server/v2/qualtricsCheckpoint.ts'),
+		loadServerModule('src/lib/server/v2/openrouter.ts'),
+		loadServerModule('src/lib/server/v2/crypto.ts'),
+		loadServerModule('src/lib/server/v2/http.ts')
+	]);
+});
+
+const SECRET = 'unit-test-secret-that-is-more-than-thirty-two-bytes';
+const SESSION_ID = '6ba7b810-9dad-41d1-80b4-00c04fd430c8';
+const ATTEMPT_ID = '6ba7b811-9dad-41d1-80b4-00c04fd430c8';
+const OPERATION_ID = '6ba7b812-9dad-41d1-80b4-00c04fd430c8';
+const V2_CONFIG_HASHES = Object.freeze({
+	flu: 'd71414df416abfde621f64cb82530c76e002f93eb836434bc334baa4f8750b97',
+	covid: 'f1a1ebc691a9262affdb33827542e39bf216b8499fe3738793d44f08db6ddac9',
+	combo: '156f5ca09e1a191f19b367415547d63b53e33e418283c5af3c21d7f68b2d97ed'
+});
+const V3_CONFIG_HASHES = Object.freeze({
+	flu: 'a91966088f11c489253addf58c0742e518384c448e7a6e7a8e178b6ea6102e7e',
+	covid: '57902b6de625d2b9eac62cc7d6e11fbb71dad1736e793e9f2beedfcca5fe66b8',
+	combo: '2733f6ed901ab358547c8f7aca01ba11f323c55ae10116e4e63c3e0ceab747c7'
+});
+const V4_CONFIG_HASHES = Object.freeze({
+	flu: 'b51071bba514d7f5bd20a732c72e4e4cd8c89e1f4138907546ece8d9c4246467',
+	covid: 'befeb74badfd8c571acf0c1f73d59a6d5f98526068dde0d5879fbd201a8e402a',
+	combo: '85af34f5ac7c5e67e46cc6a5f4c469e479841a8f79b0cdfed07e64aacbacb61f'
+});
+const V5_CONFIG_HASHES = Object.freeze({
+	flu: '2c998c91b5e41f4c3be06b21eb2f1f2eb2246eed9e5c43e7313c0f4ac7236bb5',
+	covid: '57058fa7329e806d979c2dcfe9602f7b195f4ff1ebd7a35fbf843ba7cbafea5a',
+	combo: '63dafab12890e1f0f3dee3af18332e98a3f5dd6085fb7e449085b68d3a6459ee'
+});
+const V6_CONFIG_HASHES = Object.freeze({
+	flu: '39312f29dfa6f7f126b3a4b6100f1afc5d78e5c6541f86f7ddbc117634844949',
+	covid: '40b6fcb003b40a884a3cd8be028d332d3ce3c88b3afa46bd216aad40e61cbf7e',
+	combo: 'a489f4f8f33a017a1263d96aeeceb9afb4880f4ea423e6e86adede2910d75d3f'
+});
+const V4_SUGGESTED_QUESTIONS = Object.freeze({
+	flu: ['Is the flu shot safe for people over 65?', 'What are common side effects of the flu shot?'],
+	covid: ['Are COVID-19 vaccines safe?', 'What are common side effects of the COVID-19 vaccine?'],
+	combo: ['Is the flu shot safe for people over 65?', 'What are common side effects?']
+});
+const V5_SUGGESTED_QUESTIONS = Object.freeze({
+	flu: ['What are the side effects of the flu shot?', 'Do I really need a flu shot every year?'],
+	covid: ['What are the side effects of the COVID vaccine?', "Do I need the vaccine if I've already had COVID?"],
+	combo: ['What are the side effects of these vaccines?', 'Can I get the flu and COVID shots at the same time?']
+});
+
+test('cryptographic primitives reject weak keys and detect tampering', () => {
+	assert.throws(() => crypto.assertStrongSigningKey('short'));
+	assert.throws(() => crypto.assertStrongSigningKey('test-key-that-is-definitely-at-least-32-bytes'));
+	assert.equal(crypto.assertStrongSigningKey(SECRET), SECRET);
+	const signed = crypto.signCompactJson('v2s', { sid: 'abc', exp: 123 }, SECRET);
+	assert.deepEqual(crypto.verifyCompactJson(signed, 'v2s', SECRET), { sid: 'abc', exp: 123 });
+	assert.throws(() => crypto.verifyCompactJson(signed, 'v2s', `${SECRET}-wrong`));
+	const providerSession = crypto.openRouterSessionId(SECRET, SESSION_ID);
+	assert.equal(providerSession, crypto.openRouterSessionId(SECRET, SESSION_ID));
+	assert.notEqual(providerSession, SESSION_ID);
+	assert.equal(providerSession.includes(SESSION_ID), false);
+	assert.equal(providerSession.length, 43);
+
+	const payload = { sid: 'session', checkpointResponseId: 'R_secret123', sequence: 7 };
+	const handle = crypto.sealOpaqueJson('v2h', payload, SECRET, 'checkpoint-handle');
+	assert.equal(handle.includes('R_secret123'), false);
+	assert.deepEqual(crypto.openOpaqueJson(handle, 'v2h', SECRET, 'checkpoint-handle'), payload);
+	assert.throws(() =>
+		crypto.openOpaqueJson(handle, 'v2h', `${SECRET}-wrong`, 'checkpoint-handle')
+	);
+});
+
+test('JSON body limit stops reading a chunked request as soon as the cap is crossed', async () => {
+	let pulls = 0;
+	let cancelled = false;
+	const body = new ReadableStream({
+		pull(controller) {
+			pulls += 1;
+			controller.enqueue(new TextEncoder().encode('12345678'));
+			if (pulls >= 100) controller.close();
+		},
+		cancel() {
+			cancelled = true;
+		}
+	});
+	const request = new Request('https://example.test/api', {
+		method: 'POST',
+		body,
+		duplex: 'half'
+	});
+	await assert.rejects(
+		http.readJsonWithByteLimit(request, 15),
+		(error) => error.status === 413 && error.code === 'payload_too_large'
+	);
+	assert.equal(cancelled, true);
+	assert.ok(pulls < 100);
+});
+
+test('typed HTTP errors expose retryability without exposing server diagnostics', async () => {
+	const response = http.errorResponse(
+		new http.V2HttpError(
+			503,
+			'provider_route_unavailable',
+			'The vaccine information service could not answer just now.',
+			false
+		)
+	);
+	assert.equal(response.status, 503);
+	assert.deepEqual(await response.json(), {
+		v: 2,
+		error: {
+			code: 'provider_route_unavailable',
+			message: 'The vaccine information service could not answer just now.',
+			retryable: false
+		}
+	});
+
+	const ordinary = http.errorResponse(new http.V2HttpError(400, 'invalid_request', 'Invalid request'));
+	assert.deepEqual(await ordinary.json(), {
+		v: 2,
+		error: { code: 'invalid_request', message: 'Invalid request' }
+	});
+});
+
+test('structured production log calls do not include secrets, content, or join keys', async () => {
+	const routeFiles = [
+		'src/routes/api/v2/session/[condition]/+server.ts',
+		'src/routes/api/v2/chat/+server.ts',
+		'src/routes/api/v2/checkpoint/+server.ts'
+	];
+	const forbidden = [
+		'sessionToken',
+		'attemptNonce',
+		'transcriptJson',
+		'userMessage',
+		'checkpointResponseId',
+		'createOperationId',
+		'session.sid',
+		'apiKey'
+	];
+	for (const relativePath of routeFiles) {
+		const source = await readFile(fileURLToPath(new URL(`../${relativePath}`, import.meta.url)), 'utf8');
+		const logCalls = source.match(/logger\.(?:info|warn|error)\([\s\S]{0,700}?\);/g) ?? [];
+		assert.ok(logCalls.length > 0, `${relativePath} has no observable events`);
+		for (const call of logCalls) {
+			for (const name of forbidden) {
+				assert.equal(call.includes(name), false, `${relativePath} logs forbidden field ${name}`);
+			}
+		}
+	}
+});
+
+function canonicalSnapshot(overrides = {}) {
+	const snapshot = {
+		schemaVersion: 2,
+		chatSessionKey: SESSION_ID,
+		condition: 'covid',
+		configVersion: '',
+		configHash: '',
+		snapshotSequence: 4,
+		state: 'active',
+		createdAtISO: '2026-08-03T12:00:00.000Z',
+		updatedAtISO: '2026-08-03T12:00:01.000Z',
+		chatEndISO: null,
+		messages: [],
+		counters: {
+			totalMessages: 0,
+			initialMessages: 0,
+			userMessages: 0,
+			assistantMessages: 0,
+			completeAssistantMessages: 0,
+			incompleteAssistantMessages: 0,
+			totalContentCodePoints: 0,
+			serializedUtf16CodeUnits: 0,
+			serializedUtf8Bytes: 0
+		},
+		parent: { lastAcknowledgedRevision: 0, syncCount: 0 },
+		checkpoint: { hasHandle: false, lastAcknowledgedRevision: 0 },
+		captureErrors: [],
+		...overrides
+	};
+	let json = '';
+	for (let iteration = 0; iteration < 8; iteration += 1) {
+		json = JSON.stringify(snapshot);
+		const utf16 = json.length;
+		const utf8 = Buffer.byteLength(json, 'utf8');
+		if (
+			snapshot.counters.serializedUtf16CodeUnits === utf16 &&
+			snapshot.counters.serializedUtf8Bytes === utf8
+		) break;
+		snapshot.counters.serializedUtf16CodeUnits = utf16;
+		snapshot.counters.serializedUtf8Bytes = utf8;
+	}
+	return { snapshot, json: JSON.stringify(snapshot) };
+}
+
+test('fixed registry exposes public UI but not the prompt or provider configuration', () => {
+	const hashes = new Set();
+	for (const arm of ['flu', 'covid', 'combo']) {
+		const config = configs.getStudyConfig(arm);
+		const publicConfig = configs.getPublicStudyConfig(config);
+		assert.equal(config.condition, arm);
+		assert.equal(config.configVersion, `albertsons-2026-${arm}-v6`);
+		assert.equal(config.configHash, V6_CONFIG_HASHES[arm]);
+		assert.match(publicConfig.initialMessages[0].id, /^[a-f0-9-]{36}$/);
+		assert.equal(publicConfig.ui.themeId, 'albertsons-v1');
+		assert.equal(publicConfig.ui.headerSubtitle, 'Ask a question or browse common topics');
+		assert.match(publicConfig.ui.headerTitle, /vaccine information$/);
+		assert.match(publicConfig.ui.privacyNote, /AI tool can make mistakes/);
+		assert.equal(publicConfig.ui.endChatText, 'End chat');
+		assert.deepEqual(publicConfig.ui.suggestedQuestions, V5_SUGGESTED_QUESTIONS[arm]);
+		assert.equal('systemPrompt' in publicConfig, false);
+		assert.equal('model' in publicConfig, false);
+		assert.equal(
+			configs.getStudyConfigRevision(arm, config.configVersion, config.configHash),
+			config
+		);
+		hashes.add(config.configHash);
+	}
+	assert.equal(hashes.size, 3);
+	assert.equal(
+		configs.getStudyConfigRevision('flu', 'albertsons-2026-flu-v1', '0'.repeat(64)),
+		undefined
+	);
+});
+
+test('all arms retain the whitespace-normalized v5 shared intervention prompt', () => {
+	const prompts = ['flu', 'covid', 'combo'].map(
+		(arm) => configs.getStudyConfig(arm).systemPrompt
+	);
+	assert.equal(new Set(prompts).size, 1, 'fixed survey routes must not silently tailor the prompt');
+	const normalized = prompts[0]
+		.split('\n')
+		.map((line) => line.trimEnd())
+		.join('\n');
+	assert.equal(
+		createHash('sha256').update(normalized, 'utf8').digest('hex'),
+		'dbac171816c6004507b67a199cb5a2c53b6486798b6961ac1c259e63b95ea626'
+	);
+	assert.equal(normalized.includes('# INSTRUCTION AND SAFETY BOUNDARY'), false);
+});
+
+test('configuration hash covers runtime limits, retries, and deadlines', () => {
+	const config = configs.getStudyConfig('flu');
+	const { configHash, ...material } = config;
+	assert.equal(configHash, configs.hashStudyConfigMaterial(material));
+	for (const policyKey of [
+		'maxTurns',
+		'maxSnapshotMessages',
+		'maxCaptureErrors',
+		'providerFirstByteTimeoutMs',
+		'providerStreamIdleTimeoutMs',
+		'providerHardTimeoutMs',
+		'providerMaxAttempts',
+		'providerMaxRetryAfterMs',
+		'providerDefaultRetryDelayMs',
+		'maxProviderSseEventChars',
+		'checkpointUpstreamTimeoutMs',
+		'checkpointUpstreamMaxAttempts'
+	]) {
+		const changedPolicy = {
+			...material,
+			runtimePolicy: {
+				...material.runtimePolicy,
+				[policyKey]: material.runtimePolicy[policyKey] + 1
+			}
+		};
+		assert.notEqual(
+			configHash,
+			configs.hashStudyConfigMaterial(changedPolicy),
+			`${policyKey} must affect configHash`
+		);
+	}
+	const changedRetryStatuses = {
+		...material,
+		runtimePolicy: {
+			...material.runtimePolicy,
+			providerRetryableStatusCodes: [...material.runtimePolicy.providerRetryableStatusCodes, 408]
+		}
+	};
+	assert.notEqual(configHash, configs.hashStudyConfigMaterial(changedRetryStatuses));
+	assert.notEqual(
+		configHash,
+		configs.hashStudyConfigMaterial({
+			...material,
+			model: { ...material.model, reasoning: undefined }
+		}),
+		'reasoning effort must affect configHash'
+	);
+});
+
+test('Opus 5 load-balances only across the two US ZDR routes while every shipped revision remains resumable', () => {
+	const previousCapacityHashes = {
+		flu: '603db4e2ad1c0f917ba6275cff1d3a01e5d62aadf603b3197ad52fff00fcb89f',
+		covid: 'eb32ff433c6444e2fee6e6ba6c1329b64d726290dcf809bc746fe51f769f1d6a',
+		combo: '97f385c05b0d8cfe405af4da851bbb0d95b34e487e3e0c822fc57b9e5642af6a'
+	};
+	const previousActiveHashes = {
+		flu: 'fec05c53be6f3d6e78025fa8e80c48ba3945055287e3d2fb5023fa01f507536d',
+		covid: 'b536ba259c8f8653395291a8027e50cdd918adedb192eeca81a9678d6fde4b90',
+		combo: 'd4a7b9719f8257b88fbfb1f6012051beac9f673911be78557d54b91a41ad82ee'
+	};
+	for (const arm of ['flu', 'covid', 'combo']) {
+		const active = configs.getStudyConfig(arm);
+		assert.deepEqual(active.model.provider, {
+			only: ['google-vertex/us', 'amazon-bedrock/us-east-1'],
+			zdr: true,
+			data_collection: 'deny',
+			allow_fallbacks: true,
+			require_parameters: true
+		});
+		assert.equal(active.configVersion, `albertsons-2026-${arm}-v6`);
+		assert.equal(active.configHash, V6_CONFIG_HASHES[arm]);
+		assert.equal(active.model.name, 'anthropic/claude-opus-5');
+		assert.deepEqual(active.model.reasoning, { effort: 'low', exclude: true });
+		assert.equal(active.runtimePolicy.providerMaxAttempts, 1);
+		assert.equal(active.ui.themeId, 'albertsons-v1');
+		assert.deepEqual(active.ui.suggestedQuestions, V5_SUGGESTED_QUESTIONS[arm]);
+
+		const previousV5 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v5`,
+			V5_CONFIG_HASHES[arm]
+		);
+		assert.ok(previousV5, `${arm} prior Set B ordered-provider revision must remain resumable`);
+		assert.deepEqual(previousV5.model.provider, {
+			order: ['google-vertex/us', 'amazon-bedrock/us-east-1'],
+			only: ['google-vertex/us', 'amazon-bedrock/us-east-1'],
+			zdr: true,
+			data_collection: 'deny',
+			allow_fallbacks: true,
+			require_parameters: true
+		});
+		assert.deepEqual(previousV5.ui.suggestedQuestions, V5_SUGGESTED_QUESTIONS[arm]);
+
+		const previousV4 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v4`,
+			V4_CONFIG_HASHES[arm]
+		);
+		assert.ok(previousV4, `${arm} prior low-effort Opus 5 revision must remain resumable`);
+		assert.equal(previousV4.model.name, 'anthropic/claude-opus-5');
+		assert.deepEqual(previousV4.model.reasoning, { effort: 'low', exclude: true });
+		assert.equal(previousV4.runtimePolicy.providerMaxAttempts, 1);
+		assert.deepEqual(previousV4.model.provider, previousV5.model.provider);
+		assert.deepEqual(previousV4.ui.suggestedQuestions, V4_SUGGESTED_QUESTIONS[arm]);
+
+		const previousV3 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v3`,
+			V3_CONFIG_HASHES[arm]
+		);
+		assert.ok(previousV3, `${arm} prior default-effort Opus 5 revision must remain resumable`);
+		assert.equal(previousV3.model.name, 'anthropic/claude-opus-5');
+		assert.equal(previousV3.model.reasoning, undefined);
+		assert.equal(previousV3.runtimePolicy.providerMaxAttempts, 1);
+		assert.deepEqual(previousV3.model.provider, previousV5.model.provider);
+
+		const previousV2 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v2`,
+			V2_CONFIG_HASHES[arm]
+		);
+		assert.ok(previousV2, `${arm} prior v2 revision must remain resumable`);
+		assert.equal(previousV2.model.name, 'anthropic/claude-opus-4.7');
+		assert.equal(previousV2.runtimePolicy.providerMaxAttempts, 2);
+		assert.deepEqual(previousV2.model.provider, {
+			only: ['google-vertex/us'],
+			zdr: true,
+			data_collection: 'deny',
+			allow_fallbacks: false,
+			require_parameters: true
+		});
+
+		const previousCapacity = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v1`,
+			previousCapacityHashes[arm]
+		);
+		assert.ok(previousCapacity, `${arm} prior 320k revision must remain resumable`);
+		assert.equal(previousCapacity.runtimePolicy.maxTranscriptUtf8Bytes, 320_000);
+		assert.deepEqual(previousCapacity.model.provider, {
+			only: ['amazon-bedrock/us'],
+			zdr: true,
+			data_collection: 'deny',
+			allow_fallbacks: false,
+			require_parameters: true
+		});
+
+		const previousActive = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v1`,
+			previousActiveHashes[arm]
+		);
+		assert.ok(previousActive, `${arm} prior 280k revision must remain resumable`);
+		assert.equal(previousActive.runtimePolicy.maxTranscriptUtf8Bytes, 280_000);
+		assert.deepEqual(previousActive.model.provider, previousCapacity.model.provider);
+		assert.equal(previousActive.ui.themeId, undefined);
+
+		const previousStrictMaterial = { ...previousCapacity };
+		delete previousStrictMaterial.configHash;
+		const legacyMaterial = {
+			...previousStrictMaterial,
+			model: {
+				...previousStrictMaterial.model,
+				provider: { only: ['amazon-bedrock/us'], zdr: true }
+			}
+		};
+		const legacyHash = configs.hashStudyConfigMaterial(legacyMaterial);
+		assert.notEqual(active.configHash, legacyHash);
+		const legacy = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v1`,
+			legacyHash
+		);
+		assert.ok(legacy, `${arm} legacy provider revision must remain resumable`);
+		assert.deepEqual(legacy.model.provider, { only: ['amazon-bedrock/us'], zdr: true });
+	}
+});
+
+test('session and history signatures bind arm, session, sequence, and exact history', () => {
+	const config = configs.getStudyConfig('flu');
+	const issued = tokens.issueSessionToken({
+		secret: SECRET,
+		chatSessionKey: SESSION_ID,
+		attemptNonce: ATTEMPT_ID,
+		condition: 'flu',
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		now: 1_000
+	});
+	const session = tokens.verifySessionToken(issued.token, SECRET, 1_100);
+	const history = [
+		{ id: ATTEMPT_ID, role: 'user', content: 'Is it safe?' },
+		{ id: OPERATION_ID, role: 'assistant', content: 'General information follows.' }
+	];
+	const tag = tokens.issueHistoryTag({ secret: SECRET, session, sequence: 1, history });
+	assert.equal(
+		tokens.verifyHistoryTag({ token: tag, secret: SECRET, session, sequence: 1, history }).sequence,
+		1
+	);
+	assert.throws(() =>
+		tokens.verifyHistoryTag({
+			token: tag,
+			secret: SECRET,
+			session,
+			sequence: 1,
+			history: [{ ...history[0], content: 'changed' }, history[1]]
+		})
+	);
+	const otherAttempt = tokens.issueSessionToken({
+		secret: SECRET,
+		chatSessionKey: SESSION_ID,
+		attemptNonce: OPERATION_ID,
+		condition: 'flu',
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		now: 1_000
+	}).claims;
+	assert.throws(() =>
+		tokens.verifyHistoryTag({ token: tag, secret: SECRET, session: otherAttempt, sequence: 1, history })
+	);
+});
+
+test('rotating checkpoint handle is opaque and binds operation, revision, and checksum', () => {
+	const config = configs.getStudyConfig('combo');
+	const session = tokens.issueSessionToken({
+		secret: SECRET,
+		chatSessionKey: SESSION_ID,
+		attemptNonce: ATTEMPT_ID,
+		condition: 'combo',
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		now: 2_000
+	}).claims;
+	const checksum = 'a'.repeat(64);
+	const handle = tokens.issueCheckpointHandle({
+		secret: SECRET,
+		session,
+		checkpointResponseId: 'R_secret123',
+		createOperationId: OPERATION_ID,
+		acknowledgedSequence: 9,
+		acknowledgedChecksum: checksum,
+		now: 2_000
+	});
+	assert.equal(handle.includes('R_secret123'), false);
+	const verified = tokens.verifyCheckpointHandle({ token: handle, secret: SECRET, session, now: 2_001 });
+	assert.equal(verified.createOperationId, OPERATION_ID);
+	assert.equal(verified.acknowledgedSequence, 9);
+	assert.equal(verified.acknowledgedChecksum, checksum);
+	assert.throws(() => tokens.verifyCheckpointHandle({ token: handle, secret: `${SECRET}-wrong`, session, now: 2_001 }));
+	const otherAttempt = tokens.issueSessionToken({
+		secret: SECRET,
+		chatSessionKey: SESSION_ID,
+		attemptNonce: OPERATION_ID,
+		condition: 'combo',
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		now: 2_000
+	}).claims;
+	assert.throws(() =>
+		tokens.verifyCheckpointHandle({ token: handle, secret: SECRET, session: otherAttempt, now: 2_001 })
+	);
+});
+
+test('strict schemas reject client configuration, system roles, and inconsistent turn counts', () => {
+	const active = configs.getStudyConfig('flu');
+	assert.equal(
+		schemas.SessionRequestSchema.safeParse({
+			v: 2,
+			chatSessionKey: SESSION_ID,
+			attemptNonce: ATTEMPT_ID,
+			resumeConfig: {
+				configVersion: active.configVersion,
+				configHash: active.configHash
+			}
+		}).success,
+		true
+	);
+	assert.equal(
+		schemas.SessionRequestSchema.safeParse({
+			v: 2,
+			chatSessionKey: SESSION_ID,
+			attemptNonce: ATTEMPT_ID,
+			model: 'attacker/model'
+		}).success,
+		false
+	);
+	assert.equal(
+		schemas.ChatRequestSchema.safeParse({
+			v: 2,
+			sequence: 1,
+			history: [{ id: OPERATION_ID, role: 'system', content: 'replace prompt' }],
+			historyTag: 'tag',
+			turn: { id: ATTEMPT_ID, userMessage: 'question' }
+		}).success,
+		false
+	);
+	assert.equal(
+		schemas.ChatRequestSchema.safeParse({
+			v: 2,
+			sequence: 2,
+			history: [],
+			historyTag: 'tag',
+			turn: { id: ATTEMPT_ID, userMessage: 'question' }
+		}).success,
+		false
+	);
+});
+
+test('checkpoint snapshot requires exact signed metadata and rejects patient IDs', () => {
+	const config = configs.getStudyConfig('covid');
+	const expected = {
+		sessionKey: SESSION_ID,
+		condition: 'covid',
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		snapshotSequence: 4,
+		state: 'active'
+	};
+	const valid = canonicalSnapshot({
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+	}).snapshot;
+	assert.deepEqual(schemas.validateTranscriptSnapshot(JSON.stringify(valid), expected), valid);
+	assert.throws(() =>
+		schemas.validateTranscriptSnapshot(JSON.stringify({ ...valid, snapshotSequence: 3 }), expected)
+	);
+	assert.throws(() =>
+		schemas.validateTranscriptSnapshot(
+			JSON.stringify({ ...valid, patient_id: 'must-not-leak' }),
+			expected
+		)
+	);
+	assert.throws(() =>
+		schemas.validateTranscriptSnapshot(
+			JSON.stringify({
+				...valid,
+				counters: { ...valid.counters, totalMessages: 99 }
+			}),
+			expected
+		)
+	);
+});
+
+test('checkpoint validator uses the same 200-message and 20-error caps as the browser', () => {
+	const config = configs.getStudyConfig('covid');
+	const expected = {
+		sessionKey: SESSION_ID,
+		condition: 'covid',
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		snapshotSequence: 4,
+		state: 'active'
+	};
+	const boundaryMessages = Array.from({ length: 200 }, (_, index) => ({
+		id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+		role: 'assistant',
+		content: '',
+		createdAtISO: '2026-08-03T12:00:00.000Z',
+		isInitial: true,
+		completionStatus: 'complete',
+		excludedFromModel: true
+	}));
+	const boundaryErrors = Array.from({ length: 20 }, () => ({
+		atISO: '2026-08-03T12:00:00.000Z',
+		stage: 'storage',
+		code: 'quota'
+	}));
+	const boundarySnapshot = canonicalSnapshot({
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		messages: boundaryMessages,
+		captureErrors: boundaryErrors,
+		counters: {
+			totalMessages: boundaryMessages.length,
+			initialMessages: boundaryMessages.length,
+			userMessages: 0,
+			assistantMessages: 0,
+			completeAssistantMessages: boundaryMessages.length,
+			incompleteAssistantMessages: 0,
+			totalContentCodePoints: 0,
+			serializedUtf16CodeUnits: 0,
+			serializedUtf8Bytes: 0
+		}
+	}).json;
+	assert.doesNotThrow(() => schemas.validateTranscriptSnapshot(boundarySnapshot, expected));
+
+	const messages = [
+		...boundaryMessages,
+		{
+			...boundaryMessages[0],
+			id: '00000000-0000-4000-8000-000000000200'
+		}
+	];
+	const tooManyMessages = canonicalSnapshot({
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		messages,
+		counters: {
+			totalMessages: messages.length,
+			initialMessages: messages.length,
+			userMessages: 0,
+			assistantMessages: 0,
+			completeAssistantMessages: 0,
+			incompleteAssistantMessages: 0,
+			totalContentCodePoints: 0,
+			serializedUtf16CodeUnits: 0,
+			serializedUtf8Bytes: 0
+		}
+	}).json;
+	assert.throws(() => schemas.validateTranscriptSnapshot(tooManyMessages, expected));
+
+	const captureErrors = [
+		...boundaryErrors,
+		{ atISO: '2026-08-03T12:00:00.000Z', stage: 'storage', code: 'one-too-many' }
+	];
+	const tooManyErrors = canonicalSnapshot({
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		captureErrors
+	}).json;
+	assert.throws(() => schemas.validateTranscriptSnapshot(tooManyErrors, expected));
+});
+
+test('checkpoint chunking preserves Unicode and clears all unused fields', () => {
+	const config = configs.getStudyConfig('flu');
+	const session = tokens.issueSessionToken({
+		secret: SECRET,
+		chatSessionKey: SESSION_ID,
+		attemptNonce: ATTEMPT_ID,
+		condition: 'flu',
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		now: 3_000
+	}).claims;
+	const transcriptJson = JSON.stringify({
+		schemaVersion: 2,
+		chatSessionKey: SESSION_ID,
+		condition: 'flu',
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		snapshotSequence: 1,
+		messages: [{ content: `${'x'.repeat(11_900)}${'😀'.repeat(3_000)}${'界'.repeat(3_000)}` }]
+	});
+	const result = checkpoint.checkpointEmbeddedData({
+		session,
+		snapshot: {
+			createOperationId: OPERATION_ID,
+			snapshotSequence: 1,
+			state: 'active',
+			transcriptJson
+		},
+		nowIso: '2026-08-03T00:00:00.000Z'
+	});
+	const rebuilt = Array.from({ length: 24 }, (_, index) => result.fields[`chunk${index + 1}`]).join('');
+	assert.equal(rebuilt, transcriptJson);
+	assert.equal(result.fields.chunk24, '');
+	assert.equal(result.fields.chunkOverflow, '');
+	assert.equal(result.fields.checksum, result.checksum);
+	for (let index = 1; index < 24; index += 1) {
+		const left = result.fields[`chunk${index}`];
+		const right = result.fields[`chunk${index + 1}`];
+		assert.ok(Buffer.byteLength(left, 'utf8') <= 12_000);
+		if (!left || !right) continue;
+		assert.equal(/[\uD800-\uDBFF]$/.test(left), false);
+		assert.equal(/^[\uDC00-\uDFFF]/.test(right), false);
+	}
+});
+
+test('Qualtrics checkpoint writes never retry or turn a failed update into a create', async () => {
+	const originalFetch = globalThis.fetch;
+	const config = {
+		token: 'qualtrics-test-token',
+		surveyId: 'SV_Test123',
+		baseUrl: 'https://test.qualtrics.com/API/v3'
+	};
+	let calls = 0;
+	const requests = [];
+	globalThis.fetch = async (url, init) => {
+		calls += 1;
+		requests.push({ url: String(url), init });
+		return new Response('upstream failure', { status: 503 });
+	};
+	try {
+		await assert.rejects(
+			checkpoint.createQualtricsCheckpoint({
+				config,
+				fields: { tsLast: 'now', chunk1: '{}' },
+				idempotencyKey: OPERATION_ID
+			}),
+			(error) => error.code === 'ambiguous_create' && error.ambiguousCreate === true
+		);
+		assert.equal(calls, 1);
+		assert.equal(new Headers(requests[0].init.headers).get('idempotency-key'), OPERATION_ID);
+		calls = 0;
+		await assert.rejects(
+			checkpoint.updateQualtricsCheckpoint({
+				config,
+				checkpointResponseId: 'R_Test123',
+				fields: { tsLast: 'later', chunk1: '{"new":true}' }
+			}),
+			(error) => error.code === 'checkpoint_update_failed' && error.ambiguousCreate === false
+		);
+		assert.equal(calls, 1);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('provider retries at most once before output and preserves coalesced SSE events', async () => {
+	const originalFetch = globalThis.fetch;
+	const requests = [];
+	let calls = 0;
+	const providerSse = [
+		'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
+		'',
+		'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+		'',
+		'data: [DONE]',
+		'',
+	].join('\r\n');
+	globalThis.fetch = async (_url, init) => {
+		calls += 1;
+		requests.push(JSON.parse(String(init.body)));
+		if (calls === 1) {
+			return new Response('busy', { status: 503, headers: { 'retry-after': '0' } });
+		}
+		return new Response(providerSse, {
+			status: 200,
+			headers: { 'content-type': 'text/event-stream', 'x-generation-id': 'gen_test' }
+		});
+	};
+	try {
+		const retainedV2 = configs.getStudyConfigRevision(
+			'combo',
+			'albertsons-2026-combo-v2',
+			V2_CONFIG_HASHES.combo
+		);
+		assert.ok(retainedV2);
+		const stream = await openrouter.startOpenRouterStream({
+			config: retainedV2,
+			history: [],
+			userMessage: 'Is it safe?',
+			providerSessionId: SESSION_ID,
+			apiKey: 'sk-or-test',
+			clientSignal: new AbortController().signal
+		});
+		const events = [];
+		for await (const event of stream.events()) events.push(event);
+		assert.equal(calls, 2);
+		assert.deepEqual(events, [
+			{ kind: 'delta', text: 'Hello' },
+			{ kind: 'done', finishReason: 'stop' }
+		]);
+		assert.deepEqual(requests[1].provider, {
+			only: ['google-vertex/us'],
+			zdr: true,
+			data_collection: 'deny',
+			allow_fallbacks: false,
+			require_parameters: true
+		});
+		assert.equal(requests[1].model, 'anthropic/claude-opus-4.7');
+		assert.equal(requests[1].session_id, SESSION_ID);
+		assert.equal(requests[1].stream, true);
+		assert.equal('max_tokens' in requests[1], false);
+		assert.equal('temperature' in requests[1], false);
+		assert.deepEqual(requests[1].messages[0].content[0].cache_control, { type: 'ephemeral' });
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('active Opus 5 policy delegates two-provider failover to one OpenRouter request', async () => {
+	const originalFetch = globalThis.fetch;
+	const requests = [];
+	globalThis.fetch = async (_url, init) => {
+		requests.push(JSON.parse(String(init.body)));
+		return new Response('busy', { status: 503, headers: { 'retry-after': '0' } });
+	};
+	try {
+		await assert.rejects(
+			openrouter.startOpenRouterStream({
+				config: configs.getStudyConfig('combo'),
+				history: [],
+				userMessage: 'Is it safe?',
+				providerSessionId: SESSION_ID,
+				apiKey: 'sk-or-test',
+				clientSignal: new AbortController().signal
+			}),
+			(error) => error instanceof openrouter.OpenRouterStartError && error.code === 'provider_unavailable'
+		);
+		assert.equal(requests.length, 1);
+		assert.deepEqual(requests[0].provider, {
+			only: ['google-vertex/us', 'amazon-bedrock/us-east-1'],
+			zdr: true,
+			data_collection: 'deny',
+			allow_fallbacks: true,
+			require_parameters: true
+		});
+		assert.equal(requests[0].model, 'anthropic/claude-opus-5');
+		assert.equal(requests[0].session_id, SESSION_ID);
+		assert.deepEqual(requests[0].reasoning, { effort: 'low', exclude: true });
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('missing allowed provider is typed non-retryable with bounded sanitized diagnostics', async () => {
+	const originalFetch = globalThis.fetch;
+	let calls = 0;
+	globalThis.fetch = async () => {
+		calls += 1;
+		return new Response(JSON.stringify({
+			error: {
+				message: 'No allowed providers are available for the selected model.',
+				code: 404,
+				metadata: {
+					available_providers: ['amazon-bedrock', 'google-vertex', 'unsafe provider\nsecret'],
+						requested_providers: ['google-vertex/us']
+				}
+			}
+		}), {
+			status: 404,
+			headers: { 'content-type': 'application/json' }
+		});
+	};
+	try {
+		await assert.rejects(
+			openrouter.startOpenRouterStream({
+				config: configs.getStudyConfig('flu'),
+				history: [],
+				userMessage: 'Question content must never enter diagnostics',
+				providerSessionId: SESSION_ID,
+				apiKey: 'sk-or-test',
+				clientSignal: new AbortController().signal
+			}),
+			(error) => {
+				assert.equal(error instanceof openrouter.OpenRouterStartError, true);
+				assert.equal(error.status, 503);
+				assert.equal(error.code, 'provider_route_unavailable');
+				assert.equal(error.retryable, false);
+				assert.deepEqual(error.diagnostic, {
+					upstreamStatus: 404,
+					upstreamCode: '404',
+					routingFailure: 'no_allowed_providers',
+						requestedProviders: ['google-vertex/us'],
+					availableProviders: ['amazon-bedrock', 'google-vertex']
+				});
+				assert.equal(JSON.stringify(error.diagnostic).includes('Question content'), false);
+				return true;
+			}
+		);
+		assert.equal(calls, 1, 'a known provider-selection failure must not be retried');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('bare provider DONE after text is incomplete and never fabricates stop', async () => {
+	const originalFetch = globalThis.fetch;
+	let calls = 0;
+	globalThis.fetch = async () => {
+		calls += 1;
+		return new Response(
+			'data: {"choices":[{"delta":{"content":"Partial"},"finish_reason":null}]}\n\ndata: [DONE]\n\n',
+			{ status: 200, headers: { 'content-type': 'text/event-stream' } }
+		);
+	};
+	try {
+		const stream = await openrouter.startOpenRouterStream({
+			config: configs.getStudyConfig('flu'),
+			history: [],
+			userMessage: 'Question',
+			providerSessionId: SESSION_ID,
+			apiKey: 'sk-or-test',
+			clientSignal: new AbortController().signal
+		});
+		const events = [];
+		for await (const event of stream.events()) events.push(event);
+		assert.equal(calls, 1);
+		assert.deepEqual(events, [
+			{ kind: 'delta', text: 'Partial' },
+			{ kind: 'error', code: 'missing_finish_reason' }
+		]);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('oversized delimiter-free provider SSE is bounded and returns a typed start error', async () => {
+	const originalFetch = globalThis.fetch;
+	let calls = 0;
+	globalThis.fetch = async () => {
+		calls += 1;
+		return new Response('x'.repeat(65_537), {
+			status: 200,
+			headers: { 'content-type': 'text/event-stream' }
+		});
+	};
+	try {
+		await assert.rejects(
+			openrouter.startOpenRouterStream({
+				config: configs.getStudyConfig('flu'),
+				history: [],
+				userMessage: 'Question',
+				providerSessionId: SESSION_ID,
+				apiKey: 'sk-or-test',
+				clientSignal: new AbortController().signal
+			}),
+			(error) =>
+				error instanceof openrouter.OpenRouterStartError &&
+				error.code === 'provider_event_too_large' &&
+				error.status === 503
+		);
+		assert.equal(calls, 1);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});

@@ -1,9 +1,18 @@
 import { env } from '$env/dynamic/private';
-import { ENCRYPTION_IV, ENCRYPTION_KEY } from '$env/static/private';
 import type { ChatParamsType } from '$lib/chatParams';
 import { HfInference } from '@huggingface/inference';
 import { ChatOpenAI } from '@langchain/openai';
 import { decrypt } from './utils';
+
+const decryptLegacyKey = (ciphertext: string): string => {
+    if (env.ENABLE_LEGACY_V1 !== 'true') {
+        throw new Error('Legacy provider configuration is retired');
+    }
+    if (!env.ENCRYPTION_KEY || !env.ENCRYPTION_IV) {
+        throw new Error('Legacy encryption is not configured');
+    }
+    return decrypt(env.ENCRYPTION_KEY, env.ENCRYPTION_IV, ciphertext);
+};
 
 // OpenRouter routing policy, enforced SERVER-side so nothing sent by the client
 // can weaken it (chatParams are attacker-controllable; env vars are not).
@@ -60,7 +69,7 @@ export const createOpenAIProvider = (chatParams: ChatParamsType, enableStreaming
     return new ChatOpenAI({
         streaming: enableStreaming,
         model: chatParams.model.name,
-        apiKey: decrypt(ENCRYPTION_KEY, ENCRYPTION_IV, chatParams.model.apiKeyEncrypted),
+        apiKey: decryptLegacyKey(chatParams.model.apiKeyEncrypted),
         maxTokens: chatParams.model.options.maxTokens,
         temperature: chatParams.model.options.temperature,
         topP: chatParams.model.options.topP,
@@ -79,7 +88,7 @@ export const createOpenAIProvider = (chatParams: ChatParamsType, enableStreaming
 export const createHuggingFaceProvider = (chatParams: ChatParamsType) => {
     // https://www.npmjs.com/package/@huggingface/inference
     // BUT: maybe have to set up a custom langchain provider instead
-    const inference = new HfInference(decrypt(ENCRYPTION_KEY, ENCRYPTION_IV, chatParams.model.apiKeyEncrypted));
+    const inference = new HfInference(decryptLegacyKey(chatParams.model.apiKeyEncrypted));
     return inference.endpoint(chatParams.model.baseURL);
 };
 
@@ -95,7 +104,7 @@ export const createOnlineSearchProvider = (chatParams: ChatParamsType, enableStr
     return new ChatOpenAI({
         streaming: enableStreaming,
         model: "perplexity/sonar-pro",
-        apiKey: decrypt(ENCRYPTION_KEY, ENCRYPTION_IV, chatParams.model.apiKeyEncrypted),
+        apiKey: decryptLegacyKey(chatParams.model.apiKeyEncrypted),
         configuration: {
             baseURL: "https://openrouter.ai/api/v1",
         },

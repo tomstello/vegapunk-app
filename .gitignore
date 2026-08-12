@@ -8,7 +8,9 @@ node_modules
 !.env.example
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
-src/routes/test.svelte
+/src/routes/test/
+__pycache__/
+*.py[cod]
 .claude/
 .cursor/
-
+.vercel/

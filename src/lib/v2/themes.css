@@ -1,0 +1,82 @@
+/*
+ * Versioned, server-selected presentation themes. Components consume semantic
+ * roles only; no participant-controlled CSS values or asset URLs are accepted.
+ * Once a theme ID has been used in a study config, add a new ID instead of
+ * changing the existing token values.
+ */
+.v2-shell[data-vp-theme="neutral-v1"] {
+	--vp-font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	--vp-page-bg: #f7fafc;
+	--vp-surface: #ffffff;
+	--vp-text: #172033;
+	--vp-muted-text: #526274;
+	--vp-border: #dbe4ec;
+	--vp-header-title: #172033;
+	--vp-header-subtitle: #526274;
+	--vp-banner-bg: #eef6f8;
+	--vp-banner-border: #d2e4e8;
+	--vp-banner-text: #385565;
+	--vp-user-bubble-bg: #213a5b;
+	--vp-user-bubble-text: #ffffff;
+	--vp-primary-bg: #0b647f;
+	--vp-primary-hover: #0b647f;
+	--vp-primary-text: #ffffff;
+	--vp-focus: #176fce;
+	--vp-focus-soft: rgba(12, 102, 129, 0.16);
+	--vp-input-border: #9aabba;
+	--vp-input-disabled: #edf1f4;
+	--vp-secondary-border: #8497a8;
+	--vp-secondary-text: #263b50;
+	--vp-chip-border: #cbd5e1;
+	--vp-chip-text: #1e293b;
+	--vp-chip-hover: #f1f5f9;
+	--vp-link: #075985;
+	--vp-accordion-border: #cbd5e1;
+	--vp-accordion-summary: #172033;
+	--vp-progress-track: #dbe4ec;
+	--vp-progress-indicator: #6f8193;
+	--vp-avatar-halo: #eef6f8;
+	--vp-pulse-ring: rgba(11, 100, 127, 0.18);
+	--vp-scroll-border: #94a3b8;
+	--vp-scroll-shadow: rgba(15, 23, 42, 0.18);
+	--vp-card-shadow: rgba(25, 45, 70, 0.05);
+}
+
+.v2-shell[data-vp-theme="albertsons-v1"] {
+	--vp-font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+	--vp-page-bg: #ffffff;
+	--vp-surface: #ffffff;
+	--vp-text: #172033;
+	--vp-muted-text: #526274;
+	--vp-border: #d6e3f0;
+	--vp-header-title: #00529f;
+	--vp-header-subtitle: #475569;
+	--vp-banner-bg: #f0f5f9;
+	--vp-banner-border: #d6e3f0;
+	--vp-banner-text: #475569;
+	--vp-user-bubble-bg: #00529f;
+	--vp-user-bubble-text: #ffffff;
+	--vp-primary-bg: #00529f;
+	--vp-primary-hover: #003d77;
+	--vp-primary-text: #ffffff;
+	--vp-focus: #00529f;
+	--vp-focus-soft: rgba(0, 82, 159, 0.18);
+	--vp-input-border: #9aabba;
+	--vp-input-disabled: #edf1f4;
+	--vp-secondary-border: #8497a8;
+	--vp-secondary-text: #263b50;
+	--vp-chip-border: #c2d5e8;
+	--vp-chip-text: #00529f;
+	--vp-chip-hover: #e6eef5;
+	--vp-link: #00529f;
+	--vp-accordion-border: #d6e3f0;
+	--vp-accordion-summary: #00529f;
+	--vp-progress-track: #d6e3f0;
+	/* Process Blue is decorative only; visible status text carries meaning. */
+	--vp-progress-indicator: #009fe0;
+	--vp-avatar-halo: #e6eef5;
+	--vp-pulse-ring: rgba(0, 82, 159, 0.18);
+	--vp-scroll-border: #94a3b8;
+	--vp-scroll-shadow: rgba(15, 23, 42, 0.18);
+	--vp-card-shadow: rgba(25, 45, 70, 0.05);
+}

@@ -98,6 +98,12 @@ async function qualtricsFetch(input: string, init: RequestInit): Promise<Respons
 }
 
 export const POST: RequestHandler = (async ({ request, url }): Promise<Response> => {
+    if (env.ENABLE_LEGACY_V1 !== 'true') {
+        return new Response(
+            JSON.stringify({ error: 'legacy_protocol_retired', replacement: '/api/v2/checkpoint' }),
+            { status: 410, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } }
+        );
+    }
     try {
         if (!isAllowedRequestOrigin(request, url)) {
             return new Response(null, { status: 403 });

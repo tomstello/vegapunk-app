@@ -1,0 +1,21 @@
+# Local credentials and environment overrides must never enter deployment source bundles.
+.env
+.env.*
+!.env.example
+
+# Generated and local-only artifacts are rebuilt by Vercel.
+.svelte-kit/
+build/
+package/
+node_modules/
+.vercel/
+
+# Local editor/tool state.
+.DS_Store
+.claude/
+.cursor/
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Never ship the local legacy harness even if it is restored from history.
+src/routes/test/
