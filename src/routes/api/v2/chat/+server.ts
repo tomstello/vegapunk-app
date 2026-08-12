@@ -15,6 +15,7 @@ import {
 } from '$lib/server/v2/limits';
 import { openRouterSessionId } from '$lib/server/v2/crypto';
 import { OpenRouterStartError, startOpenRouterStream } from '$lib/server/v2/openrouter';
+import { ScrubberError, scrubUserMessage } from '$lib/server/v2/scrubber';
 import { ChatRequestSchema } from '$lib/server/v2/schemas';
 import { getStudyConfigRevision } from '$lib/server/v2/studyConfig';
 import {
@@ -95,12 +96,76 @@ export const POST: RequestHandler = async ({ request }) => {
 			throw new V2HttpError(413, 'context_too_large', 'The conversation is too large to continue');
 		}
 
+		// The incoming turn is the only unsigned text in the protocol. When the
+		// active revision configures a scrubber, the redacted text becomes the
+		// canonical turn everywhere downstream: the provider relay, both signed
+		// completedHistory entries, and the client's stored transcript (the
+		// canonical text is delivered to the browser in the `meta` event). The
+		// context guard above deliberately measured the raw turn; the scrubbed
+		// text is bounded to MAX_USER_CODE_POINTS, so the ceiling still holds.
+		// Failure is fail-closed: the raw turn is never relayed or signed.
+		let canonicalUserMessage = body.turn.userMessage;
+		let scrubApplied = false;
+		if (config.scrubber) {
+			const scrubStartedAt = Date.now();
+			try {
+				const scrubbed = await scrubUserMessage({
+					scrubber: config.scrubber,
+					history: body.history,
+					userMessage: body.turn.userMessage,
+					apiKey: validOpenRouterKey(env.OPENROUTER_API_KEY),
+					clientSignal: request.signal
+				});
+				canonicalUserMessage = scrubbed.text;
+				scrubApplied = true;
+				logger.debug(
+					{
+						event: 'v2_scrub_applied',
+						condition: config.condition,
+						configVersion: config.configVersion,
+						spanCount: scrubbed.spanCount,
+						attempts: scrubbed.attempts,
+						scrubLatencyMs: Date.now() - scrubStartedAt
+					},
+					'v2 chat: turn redacted'
+				);
+			} catch (error) {
+				if (error instanceof ScrubberError) {
+					logger.warn(
+						{
+							event: 'v2_scrub_failure',
+							condition: config.condition,
+							configVersion: config.configVersion,
+							code: error.code,
+							retryable: error.retryable,
+							scrubLatencyMs: Date.now() - scrubStartedAt
+						},
+						'v2 chat: redaction screen did not complete'
+					);
+					throw error.code === 'scrub_length'
+						? new V2HttpError(
+								422,
+								'scrub_length',
+								'Your question could not be processed safely. Please shorten it and try again.',
+								false
+							)
+						: new V2HttpError(
+								503,
+								'scrub_unavailable',
+								'The vaccine information service could not process your question just now. Please try again.',
+								error.retryable
+							);
+				}
+				throw error;
+			}
+		}
+
 		let providerStream;
 		try {
 			providerStream = await startOpenRouterStream({
 				config,
 				history: body.history,
-				userMessage: body.turn.userMessage,
+				userMessage: canonicalUserMessage,
 				// Send an unlinkable HMAC, not the Qualtrics-joinable chat-session
 				// UUID. OpenRouter uses it only for conversation/provider stickiness.
 				providerSessionId: openRouterSessionId(secret, session.sid),
@@ -162,7 +227,11 @@ export const POST: RequestHandler = async ({ request }) => {
 							assistantMessageId,
 							condition: session.condition,
 							configVersion: session.configVersion,
-							configHash: session.configHash
+							configHash: session.configHash,
+							// Present exactly when a scrubber ran (identity results
+							// included): the client adopts this as the stored canonical
+							// turn text, matching what `done` will sign into history.
+							...(scrubApplied ? { scrubbedUserMessage: canonicalUserMessage } : {})
 						})
 					);
 					for await (const event of providerStream.events()) {
@@ -192,7 +261,7 @@ export const POST: RequestHandler = async ({ request }) => {
 								}
 								const completedHistory: HistoryMessage[] = [
 									...body.history,
-									{ id: body.turn.id, role: 'user', content: body.turn.userMessage },
+									{ id: body.turn.id, role: 'user', content: canonicalUserMessage },
 									{ id: assistantMessageId, role: 'assistant', content: assistantText }
 								];
 								controller.enqueue(
@@ -252,7 +321,7 @@ export const POST: RequestHandler = async ({ request }) => {
 							const capped = finishReason === 'length' || finishReason === 'content_filter';
 							const completedHistory: HistoryMessage[] = [
 								...body.history,
-								{ id: body.turn.id, role: 'user', content: body.turn.userMessage },
+								{ id: body.turn.id, role: 'user', content: canonicalUserMessage },
 								{ id: assistantMessageId, role: 'assistant', content: assistantText }
 							];
 							controller.enqueue(

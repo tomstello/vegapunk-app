@@ -41,6 +41,22 @@ const configurations = ['flu', 'covid', 'combo'].map((condition) => {
 		dataCollection: config.model.provider.data_collection ?? null,
 		allowFallbacks: config.model.provider.allow_fallbacks ?? null,
 		requireParameters: config.model.provider.require_parameters ?? null,
+		scrubber: config.scrubber
+			? {
+					model: config.scrubber.model.name,
+					providerOnly: [...config.scrubber.model.provider.only],
+					zdr: config.scrubber.model.provider.zdr,
+					dataCollection: config.scrubber.model.provider.data_collection ?? null,
+					allowFallbacks: config.scrubber.model.provider.allow_fallbacks ?? null,
+					requireParameters: config.scrubber.model.provider.require_parameters ?? null,
+					maxTokens: config.scrubber.model.maxTokens,
+					reasoning: config.scrubber.model.reasoning ?? null,
+					promptSha256: sha256(config.scrubber.prompt),
+					categories: [...config.scrubber.categories],
+					timeoutMs: config.scrubber.timeoutMs,
+					maxAttempts: config.scrubber.maxAttempts
+				}
+			: null,
 		runtimePolicy: config.runtimePolicy
 	};
 });

@@ -83,6 +83,11 @@ const V6_CONFIG_HASHES = Object.freeze({
 	covid: '40b6fcb003b40a884a3cd8be028d332d3ce3c88b3afa46bd216aad40e61cbf7e',
 	combo: 'a489f4f8f33a017a1263d96aeeceb9afb4880f4ea423e6e86adede2910d75d3f'
 });
+const V7_CONFIG_HASHES = Object.freeze({
+	flu: '794c6e62c11f1e0bd0db43db397172690c8dce818e15da8cfdf6f5f7314ae782',
+	covid: 'c9507ed1a32924d64405dee7baba4dedc80218be87d3166301f43697acf10e7c',
+	combo: 'ca833d50aecea836efe360f5db474cea3596008d2bb8c5c15fa9f39e8783f26b'
+});
 const V4_SUGGESTED_QUESTIONS = Object.freeze({
 	flu: ['Is the flu shot safe for people over 65?', 'What are common side effects of the flu shot?'],
 	covid: ['Are COVID-19 vaccines safe?', 'What are common side effects of the COVID-19 vaccine?'],
@@ -169,11 +174,15 @@ test('typed HTTP errors expose retryability without exposing server diagnostics'
 });
 
 test('structured production log calls do not include secrets, content, or join keys', async () => {
+	// scrubber.ts is deliberately logger-free (the route logs counts on its
+	// behalf); it is scanned so a future logger import cannot leak turn text.
 	const routeFiles = [
 		'src/routes/api/v2/session/[condition]/+server.ts',
 		'src/routes/api/v2/chat/+server.ts',
-		'src/routes/api/v2/checkpoint/+server.ts'
+		'src/routes/api/v2/checkpoint/+server.ts',
+		'src/lib/server/v2/scrubber.ts'
 	];
+	const filesAllowedZeroEvents = new Set(['src/lib/server/v2/scrubber.ts']);
 	const forbidden = [
 		'sessionToken',
 		'attemptNonce',
@@ -187,7 +196,9 @@ test('structured production log calls do not include secrets, content, or join k
 	for (const relativePath of routeFiles) {
 		const source = await readFile(fileURLToPath(new URL(`../${relativePath}`, import.meta.url)), 'utf8');
 		const logCalls = source.match(/logger\.(?:info|warn|error)\([\s\S]{0,700}?\);/g) ?? [];
-		assert.ok(logCalls.length > 0, `${relativePath} has no observable events`);
+		if (!filesAllowedZeroEvents.has(relativePath)) {
+			assert.ok(logCalls.length > 0, `${relativePath} has no observable events`);
+		}
 		for (const call of logCalls) {
 			for (const name of forbidden) {
 				assert.equal(call.includes(name), false, `${relativePath} logs forbidden field ${name}`);
@@ -246,8 +257,8 @@ test('fixed registry exposes public UI but not the prompt or provider configurat
 		const config = configs.getStudyConfig(arm);
 		const publicConfig = configs.getPublicStudyConfig(config);
 		assert.equal(config.condition, arm);
-		assert.equal(config.configVersion, `albertsons-2026-${arm}-v6`);
-		assert.equal(config.configHash, V6_CONFIG_HASHES[arm]);
+		assert.equal(config.configVersion, `albertsons-2026-${arm}-v7`);
+		assert.equal(config.configHash, V7_CONFIG_HASHES[arm]);
 		assert.match(publicConfig.initialMessages[0].id, /^[a-f0-9-]{36}$/);
 		assert.equal(publicConfig.ui.themeId, 'albertsons-v1');
 		assert.equal(publicConfig.ui.headerSubtitle, 'Ask a question or browse common topics');
@@ -257,6 +268,7 @@ test('fixed registry exposes public UI but not the prompt or provider configurat
 		assert.deepEqual(publicConfig.ui.suggestedQuestions, V5_SUGGESTED_QUESTIONS[arm]);
 		assert.equal('systemPrompt' in publicConfig, false);
 		assert.equal('model' in publicConfig, false);
+		assert.equal('scrubber' in publicConfig, false);
 		assert.equal(
 			configs.getStudyConfigRevision(arm, config.configVersion, config.configHash),
 			config
@@ -270,20 +282,43 @@ test('fixed registry exposes public UI but not the prompt or provider configurat
 	);
 });
 
-test('all arms retain the whitespace-normalized v5 shared intervention prompt', () => {
+test('all arms share one prompt: v5 intervention text plus exactly the scrub addendum', () => {
 	const prompts = ['flu', 'covid', 'combo'].map(
 		(arm) => configs.getStudyConfig(arm).systemPrompt
 	);
 	assert.equal(new Set(prompts).size, 1, 'fixed survey routes must not silently tailor the prompt');
-	const normalized = prompts[0]
-		.split('\n')
-		.map((line) => line.trimEnd())
-		.join('\n');
+	const normalize = (text) =>
+		text
+			.split('\n')
+			.map((line) => line.trimEnd())
+			.join('\n');
+	const normalized = normalize(prompts[0]);
 	assert.equal(
 		createHash('sha256').update(normalized, 'utf8').digest('hex'),
-		'dbac171816c6004507b67a199cb5a2c53b6486798b6961ac1c259e63b95ea626'
+		'51904821b4c3c9f2f544d4c3e9fdf062d56857105a3c94f8ac8a85176e765ae7'
 	);
 	assert.equal(normalized.includes('# INSTRUCTION AND SAFETY BOUNDARY'), false);
+
+	// The active prompt must be the retained v6 prompt (whose normalized text
+	// is the approved v5 intervention, sha dbac1718...) plus exactly one
+	// addendum block introduced by the scrub revision — nothing else edited.
+	for (const arm of ['flu', 'covid', 'combo']) {
+		const v6 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v6`,
+			V6_CONFIG_HASHES[arm]
+		);
+		assert.ok(v6, `${arm} v6 revision must remain retained`);
+		assert.equal(
+			createHash('sha256').update(normalize(v6.systemPrompt), 'utf8').digest('hex'),
+			'dbac171816c6004507b67a199cb5a2c53b6486798b6961ac1c259e63b95ea626'
+		);
+		const active = configs.getStudyConfig(arm).systemPrompt;
+		assert.ok(active.startsWith(v6.systemPrompt), 'v7 prompt must extend, not edit, the v6 prompt');
+		const addendum = active.slice(v6.systemPrompt.length);
+		assert.match(addendum, /^\n\n# PRIVACY REDACTION HANDLING\n/);
+		assert.equal(addendum.includes('never repeat placeholders back'), true);
+	}
 });
 
 test('configuration hash covers runtime limits, retries, and deadlines', () => {
@@ -355,13 +390,39 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 			allow_fallbacks: true,
 			require_parameters: true
 		});
-		assert.equal(active.configVersion, `albertsons-2026-${arm}-v6`);
-		assert.equal(active.configHash, V6_CONFIG_HASHES[arm]);
+		assert.equal(active.configVersion, `albertsons-2026-${arm}-v7`);
+		assert.equal(active.configHash, V7_CONFIG_HASHES[arm]);
 		assert.equal(active.model.name, 'anthropic/claude-opus-5');
 		assert.deepEqual(active.model.reasoning, { effort: 'low', exclude: true });
 		assert.equal(active.runtimePolicy.providerMaxAttempts, 1);
 		assert.equal(active.ui.themeId, 'albertsons-v1');
 		assert.deepEqual(active.ui.suggestedQuestions, V5_SUGGESTED_QUESTIONS[arm]);
+		// v7 adds the redaction screen; it must ride the same two US ZDR routes
+		// as the study model so one endpoint-inventory ritual covers both.
+		assert.ok(active.scrubber, `${arm} active revision must configure the scrubber`);
+		assert.equal(active.scrubber.model.name, 'anthropic/claude-sonnet-5');
+		assert.deepEqual(active.scrubber.model.provider, {
+			only: ['google-vertex/us', 'amazon-bedrock/us-east-1'],
+			zdr: true,
+			data_collection: 'deny',
+			allow_fallbacks: true,
+			require_parameters: true
+		});
+		assert.deepEqual(active.scrubber.model.reasoning, { effort: 'low', exclude: true });
+		assert.deepEqual(
+			[...active.scrubber.categories],
+			['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB', 'CITY']
+		);
+
+		const previousV6 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v6`,
+			V6_CONFIG_HASHES[arm]
+		);
+		assert.ok(previousV6, `${arm} prior load-balanced revision must remain resumable`);
+		assert.equal('scrubber' in previousV6, false, 'retained v6 must not gain a scrubber field');
+		assert.deepEqual(previousV6.model.provider, active.model.provider);
+		assert.deepEqual(previousV6.ui.suggestedQuestions, V5_SUGGESTED_QUESTIONS[arm]);
 
 		const previousV5 = configs.getStudyConfigRevision(
 			arm,
