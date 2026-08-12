@@ -1,0 +1,255 @@
+{
+  "description": "Deep scrubber stress set: long near-cap messages, mid-conversation placeholder continuation, exact-substring fidelity traps, quality edges. Same schema as pii-planted.json plus optional expectPlaceholder per expected span.",
+  "cases": [
+    {
+      "id": "long-early-pii",
+      "text": "Before I forget, my name is Dorothy Ainsworth and my number is 412-555-0173 in case this chat cuts out. I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. I take a blood pressure medication in the morning and a statin at night, and I never know whether that changes anything. My knees have been bad this year so I do not get out as much as I used to, mostly just the senior center on Tuesdays. I also read something online about the vaccine being different for older people and I could not tell if that was true or just an ad. The pharmacist last year was very kind but it was so busy that I did not want to hold up the line with all my questions. I had a cousin who swore the shot gave her the flu every single year, and I have repeated that story more times than I should have. My neighbor gets hers at the grocery store every October like clockwork and says she has never had more than a sore arm. I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. So what would you recommend for someone in my situation?",
+      "expected": [
+        {
+          "text": "Dorothy Ainsworth",
+          "category": "NAME"
+        },
+        {
+          "text": "412-555-0173",
+          "category": "PHONE"
+        }
+      ]
+    },
+    {
+      "id": "long-mid-pii",
+      "text": "I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. I take a blood pressure medication in the morning and a statin at night, and I never know whether that changes anything. My knees have been bad this year so I do not get out as much as I used to, mostly just the senior center on Tuesdays. I also read something online about the vaccine being different for older people and I could not tell if that was true or just an ad. My email is dot.ainsworth@comcast.net and I was born 11/03/1951, in case you need my file. The pharmacist last year was very kind but it was so busy that I did not want to hold up the line with all my questions. I had a cousin who swore the shot gave her the flu every single year, and I have repeated that story more times than I should have. My neighbor gets hers at the grocery store every October like clockwork and says she has never had more than a sore arm. I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. So what would you recommend for someone in my situation?",
+      "expected": [
+        {
+          "text": "dot.ainsworth@comcast.net",
+          "category": "EMAIL"
+        },
+        {
+          "text": "11/03/1951",
+          "category": "DOB"
+        }
+      ]
+    },
+    {
+      "id": "long-tail-pii",
+      "text": "I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. I take a blood pressure medication in the morning and a statin at night, and I never know whether that changes anything. My knees have been bad this year so I do not get out as much as I used to, mostly just the senior center on Tuesdays. I also read something online about the vaccine being different for older people and I could not tell if that was true or just an ad. The pharmacist last year was very kind but it was so busy that I did not want to hold up the line with all my questions. I had a cousin who swore the shot gave her the flu every single year, and I have repeated that story more times than I should have. My neighbor gets hers at the grocery store every October like clockwork and says she has never had more than a sore arm. I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. Oh and I should have said at the start, this is Eleanor Whitcombe writing. So what would you recommend for someone in my situation?",
+      "expected": [
+        {
+          "text": "Eleanor Whitcombe",
+          "category": "NAME"
+        }
+      ]
+    },
+    {
+      "id": "long-clean",
+      "text": "I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. I take a blood pressure medication in the morning and a statin at night, and I never know whether that changes anything. My knees have been bad this year so I do not get out as much as I used to, mostly just the senior center on Tuesdays. I also read something online about the vaccine being different for older people and I could not tell if that was true or just an ad. I suppose my real question is just whether the timing matters this late in the season. The pharmacist last year was very kind but it was so busy that I did not want to hold up the line with all my questions. I had a cousin who swore the shot gave her the flu every single year, and I have repeated that story more times than I should have. My neighbor gets hers at the grocery store every October like clockwork and says she has never had more than a sore arm. I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. So what would you recommend for someone in my situation?",
+      "expected": []
+    },
+    {
+      "id": "long-repeat-name",
+      "text": "I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. I take a blood pressure medication in the morning and a statin at night, and I never know whether that changes anything. My knees have been bad this year so I do not get out as much as I used to, mostly just the senior center on Tuesdays. People call me Dorothy. Dorothy has had both shots before. When Dorothy had covid it was mild. My doctor tells Dorothy to get boosted. Should Dorothy do both at once? I also read something online about the vaccine being different for older people and I could not tell if that was true or just an ad. The pharmacist last year was very kind but it was so busy that I did not want to hold up the line with all my questions. I had a cousin who swore the shot gave her the flu every single year, and I have repeated that story more times than I should have. My neighbor gets hers at the grocery store every October like clockwork and says she has never had more than a sore arm. I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. So what would you recommend for someone in my situation?",
+      "expected": [
+        {
+          "text": "Dorothy",
+          "category": "NAME"
+        }
+      ]
+    },
+    {
+      "id": "long-list-format",
+      "text": "I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. I take a blood pressure medication in the morning and a statin at night, and I never know whether that changes anything. I wrote down my questions so I do not ramble: 1. Does it matter which arm? 2. Can I take ibuprofen after? 3. Should I wait after having a cold? 4. Is the senior dose worth it? 5. Does insurance cover it at the pharmacy? 6. Can my husband get his the same day? 7. We are at 2216 Beechwood Blvd apt 4B if that matters for where to go. 8. Do I need an appointment or can we walk in? 9. How long should we sit in the waiting area after? 10. Is there a day of the week when it is less crowded? My knees have been bad this year so I do not get out as much as I used to, mostly just the senior center on Tuesdays. I also read something online about the vaccine being different for older people and I could not tell if that was true or just an ad. The pharmacist last year was very kind but it was so busy that I did not want to hold up the line with all my questions. I had a cousin who swore the shot gave her the flu every single year, and I have repeated that story more times than I should have. So what would you recommend for someone in my situation?",
+      "expected": [
+        {
+          "text": "2216 Beechwood Blvd apt 4B",
+          "category": "ADDRESS"
+        }
+      ]
+    },
+    {
+      "id": "fid-double-space",
+      "text": "My name is Jane  Doe , with a strange double space, and I want the senior flu shot.",
+      "expected": [
+        {
+          "text": "Jane  Doe",
+          "category": "NAME"
+        }
+      ]
+    },
+    {
+      "id": "fid-curly-apostrophe",
+      "text": "I’m Seán O’Brien — do the vaccines differ for people on blood thinners?",
+      "expected": [
+        {
+          "text": "Seán O’Brien",
+          "category": "NAME"
+        }
+      ]
+    },
+    {
+      "id": "fid-smart-quotes",
+      "text": "The nurse wrote “patient: Marisol Vega—age 72” on my discharge papers. Should she get both shots together?",
+      "expected": [
+        {
+          "text": "Marisol Vega",
+          "category": "NAME"
+        }
+      ]
+    },
+    {
+      "id": "fid-markdown-bold",
+      "text": "**Robert Vance** here, following up about egg allergies and the flu shot.",
+      "expected": [
+        {
+          "text": "Robert Vance",
+          "category": "NAME"
+        }
+      ]
+    },
+    {
+      "id": "fid-newlines",
+      "text": "Two things.\n\nFirst: my pharmacy has my old number.\n\nThe new one is 878-555-0921.\n\nSecond: does the high-dose version hurt more?",
+      "expected": [
+        {
+          "text": "878-555-0921",
+          "category": "PHONE"
+        }
+      ]
+    },
+    {
+      "id": "fid-lowercase-runon",
+      "text": "hi so my name is mary beth carter and i never know if i should book online or just walk in and also my cell is 4125550111 if that helps me get reminders about the second one",
+      "expected": [
+        {
+          "text": "mary beth carter",
+          "category": "NAME"
+        },
+        {
+          "text": "4125550111",
+          "category": "PHONE"
+        }
+      ]
+    },
+    {
+      "id": "mid-new-person",
+      "history": [
+        "Hi, I’m [NAME_1] and I live here in Pittsburgh. Is the flu shot safe at 71?",
+        "And does it matter that I take lisinopril?"
+      ],
+      "text": "One more thing, my brother Carlos wants to know if he can get his at the same visit.",
+      "expected": [
+        {
+          "text": "Carlos",
+          "category": "NAME",
+          "expectPlaceholder": "[NAME_2]"
+        }
+      ]
+    },
+    {
+      "id": "mid-same-person-again",
+      "history": [
+        "My daughter [NAME_1] is pregnant, is the flu shot safe for her?"
+      ],
+      "text": "And can Maria get the COVID vaccine at the same visit as the flu one?",
+      "expected": [
+        {
+          "text": "Maria",
+          "category": "NAME"
+        }
+      ]
+    },
+    {
+      "id": "mid-new-phone-cont",
+      "history": [
+        "I’m [NAME_1], my husband is [NAME_2], we are at [ADDRESS_1].",
+        "You can reach me at [PHONE_1] normally."
+      ],
+      "text": "Actually use my husband’s cell instead, it’s (724) 555-0033.",
+      "expected": [
+        {
+          "text": "(724) 555-0033",
+          "category": "PHONE",
+          "expectPlaceholder": "[PHONE_2]"
+        }
+      ]
+    },
+    {
+      "id": "mid-quote-placeholder",
+      "history": [
+        "I’m [NAME_1], asking for my mother."
+      ],
+      "text": "You said [NAME_1] should wait two weeks after being sick — does the same apply to email reminders? Mine is gret.hollis@yahoo.com by the way.",
+      "expected": [
+        {
+          "text": "gret.hollis@yahoo.com",
+          "category": "EMAIL"
+        }
+      ]
+    },
+    {
+      "id": "mid-late-turn-clean",
+      "history": [
+        "I’m [NAME_1] from the North Side.",
+        "My number is [PHONE_1].",
+        "My mother is [NAME_2], she was born [DOB_1].",
+        "We are at [ADDRESS_1].",
+        "Is the high dose covered?",
+        "What about the nasal spray for my grandson?"
+      ],
+      "text": "Okay, thank you, that answers everything I needed today.",
+      "expected": []
+    },
+    {
+      "id": "mid-long-followup",
+      "history": [
+        "We are at [ADDRESS_1], me and my sister.",
+        "I asked before about arthritis medication."
+      ],
+      "text": "I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Last season I skipped the shot because I was traveling and then everyone in my building seemed to get sick around the holidays. I take a blood pressure medication in the morning and a statin at night, and I never know whether that changes anything. My knees have been bad this year so I do not get out as much as I used to, mostly just the senior center on Tuesdays. I also read something online about the vaccine being different for older people and I could not tell if that was true or just an ad. The pharmacist last year was very kind but it was so busy that I did not want to hold up the line with all my questions. I had a cousin who swore the shot gave her the flu every single year, and I have repeated that story more times than I should have. My neighbor gets hers at the grocery store every October like clockwork and says she has never had more than a sore arm. I have been going back and forth about this for weeks and my daughter keeps telling me to just ask someone who actually knows. Also since you have our street as [ADDRESS_1] already, I will just add that my date of birth is September 9, 1948. So what would you recommend for someone in my situation?",
+      "expected": [
+        {
+          "text": "September 9, 1948",
+          "category": "DOB"
+        }
+      ]
+    },
+    {
+      "id": "qual-doctor-hospital",
+      "text": "Dr. Chen at Allegheny General told me to wait a month after my infusion. Does that sound right?",
+      "expected": [
+        {
+          "text": "Chen",
+          "category": "NAME"
+        }
+      ]
+    },
+    {
+      "id": "qual-common-word-name",
+      "text": "my husband bob said the pharmacy takes walk-ins on sundays, is that true?",
+      "expected": [
+        {
+          "text": "bob",
+          "category": "NAME"
+        }
+      ]
+    },
+    {
+      "id": "qual-medicare-vs-id",
+      "text": "I have Medicare Part B and my member number is QRX-77-4419-B. Will the senior dose be free?",
+      "expected": [
+        {
+          "text": "QRX-77-4419-B",
+          "category": "ID"
+        }
+      ]
+    },
+    {
+      "id": "qual-street-name-redacts",
+      "text": "We usually shop at the store on Maple Street near the Giant Eagle. Can I get the shot there?",
+      "expected": [
+        {
+          "text": "Maple Street",
+          "category": "ADDRESS"
+        }
+      ]
+    }
+  ]
+}
