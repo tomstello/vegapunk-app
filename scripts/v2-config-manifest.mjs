@@ -51,6 +51,14 @@ const configurations = ['flu', 'covid', 'combo'].map((condition) => {
 					requireParameters: config.scrubber.model.provider.require_parameters ?? null,
 					maxTokens: config.scrubber.model.maxTokens,
 					reasoning: config.scrubber.model.reasoning ?? null,
+					fallbackModel: config.scrubber.fallbackModel
+						? {
+								model: config.scrubber.fallbackModel.name,
+								providerOnly: [...config.scrubber.fallbackModel.provider.only],
+								zdr: config.scrubber.fallbackModel.provider.zdr,
+								temperature: config.scrubber.fallbackModel.temperature ?? null
+							}
+						: null,
 					promptSha256: sha256(config.scrubber.prompt),
 					categories: [...config.scrubber.categories],
 					timeoutMs: config.scrubber.timeoutMs,

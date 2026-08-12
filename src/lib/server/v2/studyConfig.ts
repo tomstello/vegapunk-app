@@ -28,24 +28,35 @@ export type PublicStudyUi = {
 // intervention itself to a fast-tier model. Neither Sonnet 5 US route
 // advertises `temperature` (2026-08-11 endpoint feed), so the scrubber call
 // sends none — same reasoning as the study model's null-temperature rule.
-export type ScrubberConfig = {
-	model: {
-		name: 'anthropic/claude-sonnet-5' | 'anthropic/claude-haiku-4.5';
-		baseUrl: 'https://openrouter.ai/api/v1/chat/completions';
-		provider: {
-			only: readonly (
-				| 'google-vertex/us'
-				| 'amazon-bedrock/us-east-1'
-				| 'google-vertex/us-east5'
-			)[];
-			zdr: true;
-			data_collection: 'deny';
-			allow_fallbacks: boolean;
-			require_parameters?: true;
-		};
-		maxTokens: number;
-		reasoning?: { effort: 'low'; exclude: true };
+export type ScrubberModel = {
+	name:
+		| 'anthropic/claude-sonnet-5'
+		| 'anthropic/claude-haiku-4.5'
+		| 'google/gemini-3.1-flash-lite';
+	baseUrl: 'https://openrouter.ai/api/v1/chat/completions';
+	provider: {
+		only: readonly (
+			| 'google-vertex/us'
+			| 'amazon-bedrock/us-east-1'
+			| 'google-vertex/us-east5'
+		)[];
+		zdr: true;
+		data_collection: 'deny';
+		allow_fallbacks: boolean;
+		require_parameters?: true;
 	};
+	maxTokens: number;
+	reasoning?: { effort: 'low'; exclude: true };
+	temperature?: 0;
+};
+
+export type ScrubberConfig = {
+	model: ScrubberModel;
+	// Cross-vendor secondary tried exactly once after the primary's attempts
+	// are exhausted, before failing closed. Exists so a vendor-level model
+	// incident cannot take the whole chat down; a single US route is
+	// acceptable here because it only fires when both primary routes failed.
+	fallbackModel?: ScrubberModel;
 	prompt: string;
 	categories: readonly string[];
 	timeoutMs: number;
@@ -428,17 +439,17 @@ const SCRUBBER_SONNET5_US_ZDR_PROVIDER_POLICY: ScrubberConfig['model']['provider
 });
 
 // Category list and placeholder grammar are participant-facing study policy
-// (see "V7 SCRUB REVISION - design - 2026-08-11.md" §5). CITY is included
-// pending the PI/partner decision recorded there; removing it before the
-// production cut is a one-line change to this unused revision.
+// (see "V7 SCRUB REVISION - design - 2026-08-11.md" §5). CITY/region was
+// deliberately EXCLUDED on 2026-08-12 (research-team decision: keep
+// city-level text for conversational quality and analytic signal; street-
+// level precision still redacts as ADDRESS).
 const SCRUB_CATEGORIES_V1 = Object.freeze([
 	'NAME',
 	'PHONE',
 	'EMAIL',
 	'ADDRESS',
 	'ID',
-	'DOB',
-	'CITY'
+	'DOB'
 ] as const);
 
 // Spans-only contract: the model reports exact substrings; the server (see
@@ -456,17 +467,16 @@ Report a span for each of these found in newUserMessage:
 - ADDRESS: street addresses or specific place addresses (building number + street, apartment numbers).
 - ID: government, insurance, medical-record, membership, prescription, or account numbers.
 - DOB: full or partial dates of birth. A bare age in years is NOT a DOB.
-- CITY: city, town, county, or neighborhood names that indicate where a person lives, works, or will be.
 
-Do NOT report: vaccine or medicine names; pharmacy or store brand names (for example Albertsons, Safeway); organization or agency names; URLs; ages in years; health conditions or symptoms; relationship words without a name (for example "my grandson"); or text that is already a placeholder such as [NAME_1].
+Do NOT report: city, town, county, region, or neighborhood names on their own (location stays unless it reaches street/address precision, which is ADDRESS); vaccine or medicine names; pharmacy or store brand names (for example Albertsons, Safeway); organization or agency names; URLs; ages in years; health conditions or symptoms; relationship words without a name (for example "my grandson"); or text that is already a placeholder such as [NAME_1].
 
 Output exactly one JSON object and nothing else — no prose, no code fences:
-{"spans":[{"text":"<exact substring copied character-for-character from newUserMessage>","category":"<NAME|PHONE|EMAIL|ADDRESS|ID|DOB|CITY>"}]}
+{"spans":[{"text":"<exact substring copied character-for-character from newUserMessage>","category":"<NAME|PHONE|EMAIL|ADDRESS|ID|DOB>"}]}
 If nothing needs redaction: {"spans":[]}
 If the new message clearly refers to the same person or place as an existing placeholder, add "reuse": <that placeholder's number> to the span. When unsure, omit "reuse" and a new number will be assigned.
 Accuracy of the "text" field is critical: every value must appear verbatim in newUserMessage or the report is rejected. Prefer reporting a span when uncertain whether something identifies a person; missing real identifying information is worse than an extra redaction.`;
 
-const SCRUBBER_V1_MODEL: ScrubberConfig['model'] = Object.freeze({
+const SCRUBBER_V1_MODEL: ScrubberModel = Object.freeze({
 	name: 'anthropic/claude-sonnet-5',
 	baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
 	provider: SCRUBBER_SONNET5_US_ZDR_PROVIDER_POLICY,
@@ -474,8 +484,27 @@ const SCRUBBER_V1_MODEL: ScrubberConfig['model'] = Object.freeze({
 	reasoning: { effort: 'low', exclude: true } as const
 });
 
+// Cross-vendor secondary: the only Flash-family model with a US-resident ZDR
+// route on the 2026-08-12 endpoint feed (gemini-2.5-flash has no /us tag at
+// all). Vertex-US advertises temperature for this model, so the fallback
+// pins temperature 0 for deterministic extraction.
+const SCRUBBER_V1_FALLBACK_MODEL: ScrubberModel = Object.freeze({
+	name: 'google/gemini-3.1-flash-lite',
+	baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
+	provider: Object.freeze({
+		only: ['google-vertex/us'] as const,
+		zdr: true,
+		data_collection: 'deny',
+		allow_fallbacks: false,
+		require_parameters: true
+	}),
+	maxTokens: 1_200,
+	temperature: 0 as const
+});
+
 const SCRUBBER_V1: ScrubberConfig = Object.freeze({
 	model: SCRUBBER_V1_MODEL,
+	fallbackModel: SCRUBBER_V1_FALLBACK_MODEL,
 	prompt: SCRUBBER_PROMPT_V1,
 	categories: SCRUB_CATEGORIES_V1,
 	timeoutMs: 8_000,
@@ -491,8 +520,8 @@ const SCRUBBER_V1: ScrubberConfig = Object.freeze({
 // deployed, so updating it before first use is not an in-place edit of a
 // used revision.
 const V7_SCRUB_PROMPT_ADDENDUM = `# PRIVACY REDACTION HANDLING
-User messages pass through an automated privacy screen before you receive them. Identifying details are replaced with placeholders such as [NAME_1], [CITY_1], or [PHONE_1].
-- Treat a placeholder as the detail it stands for, but never repeat placeholders back in your answers; respond naturally without using names or locations.
+User messages pass through an automated privacy screen before you receive them. Identifying details are replaced with placeholders such as [NAME_1], [PHONE_1], or [ADDRESS_1].
+- Treat a placeholder as the detail it stands for, but never repeat placeholders back in your answers; respond naturally without using participants' names or contact details.
 - If a user shares personal details, do not repeat them back; where it fits naturally, briefly note that personal details are not needed to answer their questions.`;
 
 const V7_SHARED_SYSTEM_PROMPT = `${V5_SHARED_SYSTEM_PROMPT}\n\n${V7_SCRUB_PROMPT_ADDENDUM}`;

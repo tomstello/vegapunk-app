@@ -86,9 +86,9 @@ const V6_CONFIG_HASHES = Object.freeze({
 	combo: 'a489f4f8f33a017a1263d96aeeceb9afb4880f4ea423e6e86adede2910d75d3f'
 });
 const V7_CONFIG_HASHES = Object.freeze({
-	flu: '794c6e62c11f1e0bd0db43db397172690c8dce818e15da8cfdf6f5f7314ae782',
-	covid: 'c9507ed1a32924d64405dee7baba4dedc80218be87d3166301f43697acf10e7c',
-	combo: 'ca833d50aecea836efe360f5db474cea3596008d2bb8c5c15fa9f39e8783f26b'
+	flu: '7813266ca1b8328bdbd0194425dad7556968d446d6cec3d6282c4a0e585228da',
+	covid: '27a39e6991d4ddf84d4917974f4a685654fad45a9b7560f91e230ffb060d6a77',
+	combo: 'b0ff0c991bfb172a3684f8a33b6bad0c67216571ff1c154593cf74ccd456ca0c'
 });
 const V4_SUGGESTED_QUESTIONS = Object.freeze({
 	flu: ['Is the flu shot safe for people over 65?', 'What are common side effects of the flu shot?'],
@@ -297,7 +297,7 @@ test('all arms share one prompt: v5 intervention text plus exactly the scrub add
 	const normalized = normalize(prompts[0]);
 	assert.equal(
 		createHash('sha256').update(normalized, 'utf8').digest('hex'),
-		'51904821b4c3c9f2f544d4c3e9fdf062d56857105a3c94f8ac8a85176e765ae7'
+		'0565388311fe9ae274e40cef272d0d50a0bfd8913155f067f6d9f8bd2724adcd'
 	);
 	assert.equal(normalized.includes('# INSTRUCTION AND SAFETY BOUNDARY'), false);
 
@@ -411,10 +411,21 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 			require_parameters: true
 		});
 		assert.deepEqual(active.scrubber.model.reasoning, { effort: 'low', exclude: true });
+		// CITY/region deliberately absent: research-team decision 2026-08-12
+		// keeps city-level text for conversational quality and analytic signal.
 		assert.deepEqual(
 			[...active.scrubber.categories],
-			['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB', 'CITY']
+			['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB']
 		);
+		// Cross-vendor secondary: the only Flash-family model with a US ZDR
+		// route (2026-08-12 feed). Single route is acceptable for a fallback
+		// that only fires when both primary routes have already failed.
+		assert.ok(active.scrubber.fallbackModel, `${arm} scrubber must configure a fallback model`);
+		assert.equal(active.scrubber.fallbackModel.name, 'google/gemini-3.1-flash-lite');
+		assert.deepEqual([...active.scrubber.fallbackModel.provider.only], ['google-vertex/us']);
+		assert.equal(active.scrubber.fallbackModel.provider.zdr, true);
+		assert.equal(active.scrubber.fallbackModel.temperature, 0);
+		assert.equal('reasoning' in active.scrubber.fallbackModel, false);
 
 		const previousV6 = configs.getStudyConfigRevision(
 			arm,
@@ -1383,4 +1394,114 @@ test('chat route redacts before the relay and signs only the canonical text', as
 		source.includes('scrubbedUserMessage: canonicalUserMessage'),
 		'meta must deliver the canonical turn text to the client'
 	);
+});
+
+test('scrubber falls over to the cross-vendor secondary only after primary exhaustion', async () => {
+	const withFallback = {
+		...TEST_SCRUBBER,
+		fallbackModel: {
+			name: 'google/gemini-3.1-flash-lite',
+			baseUrl: 'https://openrouter.invalid/api/v1/chat/completions',
+			provider: {
+				only: ['google-vertex/us'],
+				zdr: true,
+				data_collection: 'deny',
+				allow_fallbacks: false,
+				require_parameters: true
+			},
+			maxTokens: 1_200,
+			temperature: 0
+		}
+	};
+	const originalFetch = globalThis.fetch;
+	const requests = [];
+	globalThis.fetch = async (_url, init) => {
+		const body = JSON.parse(String(init.body));
+		requests.push(body);
+		if (body.model === 'anthropic/claude-sonnet-5') return new Response('busy', { status: 503 });
+		return scrubProviderResponse([{ text: 'Jane Doe', category: 'NAME' }]);
+	};
+	try {
+		const result = await scrubber.scrubUserMessage({
+			scrubber: withFallback,
+			history: [],
+			userMessage: 'My name is Jane Doe.',
+			apiKey: 'unit-test-key',
+			clientSignal: new AbortController().signal
+		});
+		assert.equal(result.text, 'My name is [NAME_1].');
+		assert.equal(result.usedFallback, true);
+		assert.equal(result.attempts, 3);
+		assert.equal(requests.length, 3);
+		assert.equal(requests[0].model, 'anthropic/claude-sonnet-5');
+		assert.equal(requests[1].model, 'anthropic/claude-sonnet-5');
+		const fallbackBody = requests[2];
+		assert.equal(fallbackBody.model, 'google/gemini-3.1-flash-lite');
+		assert.equal(fallbackBody.temperature, 0);
+		assert.equal('reasoning' in fallbackBody, false);
+		assert.deepEqual(fallbackBody.provider.only, ['google-vertex/us']);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('scrubber fallback is skipped for content-deterministic failures and absent config', async () => {
+	const withFallback = {
+		...TEST_SCRUBBER,
+		maxAttempts: 1,
+		fallbackModel: {
+			name: 'google/gemini-3.1-flash-lite',
+			baseUrl: 'https://openrouter.invalid/api/v1/chat/completions',
+			provider: {
+				only: ['google-vertex/us'],
+				zdr: true,
+				data_collection: 'deny',
+				allow_fallbacks: false,
+				require_parameters: true
+			},
+			maxTokens: 1_200,
+			temperature: 0
+		}
+	};
+	const originalFetch = globalThis.fetch;
+	let calls = 0;
+	// Primary succeeds but the report pushes the message over the protocol
+	// bound: that is the participant's content, not a vendor outage, so the
+	// secondary must NOT be consulted.
+	globalThis.fetch = async () => {
+		calls += 1;
+		return scrubProviderResponse([{ text: 'q', category: 'NAME' }]);
+	};
+	try {
+		await assert.rejects(
+			scrubber.scrubUserMessage({
+				scrubber: withFallback,
+				history: [],
+				userMessage: 'q' + 'x'.repeat(1_498),
+				apiKey: 'unit-test-key',
+				clientSignal: new AbortController().signal
+			}),
+			(error) => error instanceof scrubber.ScrubberError && error.code === 'scrub_length'
+		);
+		assert.equal(calls, 1, 'no fallback call after a scrub_length failure');
+
+		calls = 0;
+		globalThis.fetch = async () => {
+			calls += 1;
+			return new Response('busy', { status: 503 });
+		};
+		await assert.rejects(
+			scrubber.scrubUserMessage({
+				scrubber: { ...TEST_SCRUBBER, maxAttempts: 1 },
+				history: [],
+				userMessage: 'question',
+				apiKey: 'unit-test-key',
+				clientSignal: new AbortController().signal
+			}),
+			(error) => error instanceof scrubber.ScrubberError && error.code === 'scrub_unavailable'
+		);
+		assert.equal(calls, 1, 'no fallback without fallbackModel configured');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 });

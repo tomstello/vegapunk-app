@@ -1,5 +1,5 @@
 import { MAX_USER_CODE_POINTS, OPENROUTER_RETRYABLE_STATUS_CODES } from './limits';
-import type { ScrubberConfig } from './studyConfig';
+import type { ScrubberConfig, ScrubberModel } from './studyConfig';
 import type { HistoryMessage } from './tokens';
 
 // PII redaction screen for the incoming user turn. The scrubber model only
@@ -42,6 +42,7 @@ export type ScrubResult = {
 	text: string;
 	spanCount: number;
 	attempts: number;
+	usedFallback: boolean;
 };
 
 function countCodePoints(value: string): number {
@@ -289,6 +290,81 @@ async function delay(durationMs: number, signal: AbortSignal): Promise<void> {
 	});
 }
 
+async function attemptModel(args: {
+	model: ScrubberModel;
+	prompt: string;
+	categories: readonly string[];
+	timeoutMs: number;
+	input: string;
+	rawMessage: string;
+	inventory: Record<string, number>;
+	apiKey: string;
+	clientSignal: AbortSignal;
+}): Promise<{ text: string; spanCount: number }> {
+	const timeoutAbort = new AbortController();
+	const timer = setTimeout(() => timeoutAbort.abort(new Error('scrub_timeout')), args.timeoutMs);
+	try {
+		let response: Response;
+		try {
+			response = await fetch(args.model.baseUrl, {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${args.apiKey}`,
+					'content-type': 'application/json',
+					'http-referer': 'https://vegapunk-albertsons.vercel.app',
+					'x-title': 'Albertsons Vaccine Information Study'
+				},
+				body: JSON.stringify({
+					model: args.model.name,
+					messages: [
+						{ role: 'system', content: args.prompt },
+						{ role: 'user', content: args.input }
+					],
+					stream: false,
+					max_tokens: args.model.maxTokens,
+					...(args.model.reasoning ? { reasoning: args.model.reasoning } : {}),
+					...(args.model.temperature === undefined
+						? {}
+						: { temperature: args.model.temperature }),
+					provider: args.model.provider
+				}),
+				signal: AbortSignal.any([timeoutAbort.signal, args.clientSignal])
+			});
+		} catch {
+			const timedOut = timeoutAbort.signal.aborted && !args.clientSignal.aborted;
+			throw new ScrubberError(
+				timedOut ? 'Redaction screen timed out' : 'Redaction screen request failed',
+				timedOut ? 'scrub_timeout' : 'scrub_unavailable',
+				true
+			);
+		}
+		if (!response.ok) {
+			await response.body?.cancel().catch(() => undefined);
+			throw new ScrubberError(
+				`Redaction screen returned ${response.status}`,
+				'scrub_unavailable',
+				RETRYABLE_STATUS.has(response.status)
+			);
+		}
+		const payload = await boundedJsonBody(response);
+		const choice =
+			payload && typeof payload === 'object' && 'choices' in payload && Array.isArray(payload.choices)
+				? payload.choices[0]
+				: undefined;
+		const message =
+			choice && typeof choice === 'object' && 'message' in choice ? choice.message : undefined;
+		const content =
+			message && typeof message === 'object' && 'content' in message ? message.content : undefined;
+		if (typeof content !== 'string' || content.length === 0) {
+			throw new ScrubberError('Redaction screen returned no report', 'scrub_invalid_output', true);
+		}
+		const spans = parseSpanReport(content);
+		return applySpans(args.rawMessage, spans, args.categories, args.inventory);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 export async function scrubUserMessage(args: {
 	scrubber: ScrubberConfig;
 	history: readonly HistoryMessage[];
@@ -300,83 +376,52 @@ export async function scrubUserMessage(args: {
 	const inventory = placeholderInventory(args.history, scrubber.categories);
 	const input = scrubCallInput(args.userMessage, args.history, inventory);
 	const maxAttempts = Math.min(Math.max(scrubber.maxAttempts, 1), 3);
+	const shared = {
+		prompt: scrubber.prompt,
+		categories: scrubber.categories,
+		timeoutMs: scrubber.timeoutMs,
+		input,
+		rawMessage: args.userMessage,
+		inventory,
+		apiKey: args.apiKey,
+		clientSignal: args.clientSignal
+	};
 	let lastError: ScrubberError | undefined;
 
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-		const timeoutAbort = new AbortController();
-		const timer = setTimeout(
-			() => timeoutAbort.abort(new Error('scrub_timeout')),
-			scrubber.timeoutMs
-		);
 		try {
-			let response: Response;
-			try {
-				response = await fetch(scrubber.model.baseUrl, {
-					method: 'POST',
-					headers: {
-						authorization: `Bearer ${args.apiKey}`,
-						'content-type': 'application/json',
-						'http-referer': 'https://vegapunk-albertsons.vercel.app',
-						'x-title': 'Albertsons Vaccine Information Study'
-					},
-					body: JSON.stringify({
-						model: scrubber.model.name,
-						messages: [
-							{ role: 'system', content: scrubber.prompt },
-							{ role: 'user', content: input }
-						],
-						stream: false,
-						max_tokens: scrubber.model.maxTokens,
-						...(scrubber.model.reasoning ? { reasoning: scrubber.model.reasoning } : {}),
-						provider: scrubber.model.provider
-					}),
-					signal: AbortSignal.any([timeoutAbort.signal, args.clientSignal])
-				});
-			} catch {
-				const timedOut = timeoutAbort.signal.aborted && !args.clientSignal.aborted;
-				throw new ScrubberError(
-					timedOut ? 'Redaction screen timed out' : 'Redaction screen request failed',
-					timedOut ? 'scrub_timeout' : 'scrub_unavailable',
-					true
-				);
-			}
-			if (!response.ok) {
-				await response.body?.cancel().catch(() => undefined);
-				throw new ScrubberError(
-					`Redaction screen returned ${response.status}`,
-					'scrub_unavailable',
-					RETRYABLE_STATUS.has(response.status)
-				);
-			}
-			const payload = await boundedJsonBody(response);
-			const choice =
-				payload && typeof payload === 'object' && 'choices' in payload && Array.isArray(payload.choices)
-					? payload.choices[0]
-					: undefined;
-			const message =
-				choice && typeof choice === 'object' && 'message' in choice ? choice.message : undefined;
-			const content =
-				message && typeof message === 'object' && 'content' in message ? message.content : undefined;
-			if (typeof content !== 'string' || content.length === 0) {
-				throw new ScrubberError('Redaction screen returned no report', 'scrub_invalid_output', true);
-			}
-			const spans = parseSpanReport(content);
-			const applied = applySpans(args.userMessage, spans, scrubber.categories, inventory);
-			return { text: applied.text, spanCount: applied.spanCount, attempts: attempt };
+			const applied = await attemptModel({ model: scrubber.model, ...shared });
+			return { ...applied, attempts: attempt, usedFallback: false };
 		} catch (error) {
 			lastError =
 				error instanceof ScrubberError
 					? error
 					: new ScrubberError('Redaction screen failed', 'scrub_unavailable', true);
 			const canRetry = lastError.retryable && attempt < maxAttempts && !args.clientSignal.aborted;
-			if (!canRetry) throw lastError;
+			if (!canRetry) break;
 			try {
 				await delay(SCRUB_RETRY_DELAY_MS, args.clientSignal);
 			} catch {
-				throw lastError;
+				break;
 			}
-		} finally {
-			clearTimeout(timer);
+		}
+	}
+
+	// Cross-vendor fail-over: one attempt, only after the primary is fully
+	// exhausted and only when the participant hasn't cancelled. Content-
+	// deterministic failures (scrub_length) are not model outages — a second
+	// vendor would fail the same way, so those surface immediately.
+	if (
+		scrubber.fallbackModel &&
+		lastError &&
+		lastError.code !== 'scrub_length' &&
+		!args.clientSignal.aborted
+	) {
+		try {
+			const applied = await attemptModel({ model: scrubber.fallbackModel, ...shared });
+			return { ...applied, attempts: maxAttempts + 1, usedFallback: true };
+		} catch (error) {
+			throw error instanceof ScrubberError ? error : lastError;
 		}
 	}
 	throw lastError ?? new ScrubberError('Redaction screen failed', 'scrub_unavailable', true);

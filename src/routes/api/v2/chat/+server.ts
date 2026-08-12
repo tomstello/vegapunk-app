@@ -118,6 +118,20 @@ export const POST: RequestHandler = async ({ request }) => {
 				});
 				canonicalUserMessage = scrubbed.text;
 				scrubApplied = true;
+				if (scrubbed.usedFallback) {
+					// Operationally notable: both primary routes failed and the
+					// cross-vendor secondary carried the turn. Counts only.
+					logger.warn(
+						{
+							event: 'v2_scrub_fallback_used',
+							condition: config.condition,
+							configVersion: config.configVersion,
+							attempts: scrubbed.attempts,
+							scrubLatencyMs: Date.now() - scrubStartedAt
+						},
+						'v2 chat: redaction fallback model used'
+					);
+				}
 				logger.debug(
 					{
 						event: 'v2_scrub_applied',
@@ -125,6 +139,7 @@ export const POST: RequestHandler = async ({ request }) => {
 						configVersion: config.configVersion,
 						spanCount: scrubbed.spanCount,
 						attempts: scrubbed.attempts,
+						usedFallback: scrubbed.usedFallback,
 						scrubLatencyMs: Date.now() - scrubStartedAt
 					},
 					'v2 chat: turn redacted'
