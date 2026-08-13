@@ -1565,20 +1565,21 @@
 						<p>{ui.headerSubtitle || (condition === "combo" ? "Flu & COVID-19" : condition === "covid" ? "COVID-19" : "Flu")}</p>
 					</div>
 				</div>
-				<div class="header-actions">
-					{#if ui.appointmentCta}
-						<!-- Visible text is a compact presentation; the configured label stays
-						the accessible name (and canonical copy — fold "Schedule now" into
-						the config label at the next revision). -->
-						<a class="primary-button appointment-link" data-testid="appointment-cta" href={ui.appointmentCta.url} target="_blank" rel="noopener noreferrer" title={ui.appointmentCta.label} aria-label={`${ui.appointmentCta.label} (opens the pharmacy site in a new tab)`}><span aria-hidden="true">Schedule now ↗</span></a>
+				{#if state.lifecycle !== "completed" && !state.chatEndISO}
+					{#if !endConfirmationOpen}
+						<button bind:this={endChatButton} class="quiet-button" data-testid="end-chat" type="button" on:click={() => void openEndConfirmation()}>{ui.endChatText}</button>
 					{/if}
-					{#if state.lifecycle !== "completed" && !state.chatEndISO}
-						{#if !endConfirmationOpen}
-							<button bind:this={endChatButton} class="quiet-button" data-testid="end-chat" type="button" on:click={() => void openEndConfirmation()}>{ui.endChatText}</button>
-						{/if}
-					{/if}
-				</div>
+				{/if}
 			</header>
+
+			{#if ui.appointmentCta}
+				<div class="schedule-strip">
+					<p>Ready to book a vaccine appointment?</p>
+					<!-- Visible text is compact presentation; the configured label stays
+					the accessible name (fold into config copy at the next revision). -->
+					<a data-testid="appointment-cta" href={ui.appointmentCta.url} target="_blank" rel="noopener noreferrer" title={ui.appointmentCta.label} aria-label={`${ui.appointmentCta.label} (opens the pharmacy site in a new tab)`}><span aria-hidden="true">Schedule now ↗</span></a>
+				</div>
+			{/if}
 
 			{#if endConfirmationOpen}
 				<section class="end-confirmation" data-testid="end-confirmation" role="alertdialog" aria-labelledby="end-chat-title" aria-describedby="end-chat-detail">
@@ -1591,9 +1592,6 @@
 				</section>
 			{/if}
 
-		{#if ui.privacyNote && userTurnCount === 0}
-			<p class="privacy-note">{ui.privacyNote}</p>
-		{/if}
 
 			<!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
 			<div class="transcript" data-testid="message-list" bind:this={transcriptElement} on:scroll={handleTranscriptScroll} on:wheel|passive={handleTranscriptWheel} on:touchstart|passive={handleTranscriptTouchStart} on:touchmove|passive={handleTranscriptTouchMove} on:keydown={handleTranscriptKeydown} role="log" aria-live="polite" aria-relevant="additions text" tabindex="-1">
@@ -1701,6 +1699,9 @@
 							<p id="question-limit" data-testid="question-limit" role="status" aria-live="polite">{inputCodePoints.toLocaleString()} / {MAX_USER_CODE_POINTS.toLocaleString()} characters · {userTurnCount} / {MAX_TURNS} questions</p>
 						{/if}
 					</form>
+					{#if ui.privacyNote}
+						<p class="privacy-note">{ui.privacyNote}</p>
+					{/if}
 				</footer>
 			{/if}
 		{/if}
@@ -1710,15 +1711,12 @@
 	:global(html), :global(body) { margin: 0; min-height: 100%; background: #f7fafc; }
 	:global(body) { color: #172033; }
 	:global(*) { box-sizing: border-box; }
-	.header-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; }
-	.appointment-link { display: inline-block; flex: none; font-size: .86rem; line-height: 1.2; padding: .6rem .9rem; text-align: center; text-decoration: none; white-space: nowrap; }
+	.schedule-strip { align-items: center; background: #F2F7FC; border-bottom: 1px solid var(--vp-border); display: flex; flex: none; gap: .75rem; justify-content: space-between; padding: .55rem 1rem; }
+	.schedule-strip p { color: #33414F; font-size: .84rem; margin: 0; }
+	.schedule-strip a { background: var(--vp-primary-bg); border: 1px solid var(--vp-primary-bg); border-radius: .5rem; color: var(--vp-primary-text); display: inline-block; flex: none; font-size: .8rem; font-weight: 600; line-height: 1.2; padding: .5rem .8rem; text-align: center; text-decoration: none; white-space: nowrap; }
 	@media (max-width: 480px) {
-		/* Segmented pair: full-width row under the title, two equal columns.
-		   Equal width + equal height reads as one designed control group. */
-		.chat-header { flex-wrap: wrap; row-gap: .5rem; }
-		.header-actions { display: grid; flex: 1 1 100%; gap: .5rem; grid-template-columns: 1fr 1fr; }
-		.header-actions:has(> :only-child) { grid-template-columns: 1fr; }
-		.appointment-link, .chat-header .quiet-button { font-size: .8rem; line-height: 1.2; padding: .5rem .5rem; width: 100%; }
+		.schedule-strip { padding: .5rem .75rem; }
+		.schedule-strip p { font-size: .8rem; }
 	}
 	.v2-shell { background: var(--vp-page-bg); color: var(--vp-text); display: flex; flex-direction: column; font-family: var(--vp-font-family); height: 100vh; height: 100svh; min-height: 0; }
 	.chat-header { align-items: center; background: var(--vp-surface); border-bottom: 1px solid var(--vp-border); display: flex; flex: none; justify-content: space-between; min-height: 4rem; padding: max(.55rem, env(safe-area-inset-top)) 1rem .55rem; }
@@ -1727,7 +1725,7 @@
 	h1, h2, p { margin-top: 0; }
 	.title-lockup h1 { color: var(--vp-header-title); font-size: 1.05rem; line-height: 1.2; margin: 0; }
 	.title-lockup p { color: var(--vp-header-subtitle); font-size: .78rem; line-height: 1.2; margin: .15rem 0 0; }
-	.privacy-note { background: var(--vp-banner-bg); border-bottom: 1px solid var(--vp-banner-border); color: var(--vp-banner-text); flex: none; font-size: .82rem; line-height: 1.4; margin: 0; padding: .55rem 1rem; }
+	.privacy-note { color: var(--vp-secondary-text); font-size: .72rem; line-height: 1.45; margin: .55rem 0 0; }
 	.transcript { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 1rem max(1rem, env(safe-area-inset-left)) 1.25rem; }
 	.message-list { margin: 0 auto; max-width: 44rem; }
 	.assistant-turn { margin: 0 0 .9rem; position: relative; }
