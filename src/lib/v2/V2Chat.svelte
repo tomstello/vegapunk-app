@@ -1711,7 +1711,11 @@
 	:global(body) { color: #172033; }
 	:global(*) { box-sizing: border-box; }
 	.header-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; }
-	.appointment-link { display: inline-block; flex: none; font-size: .86rem; padding: .6rem .9rem; text-align: center; text-decoration: none; white-space: nowrap; }
+	.appointment-link { display: inline-block; flex: none; font-size: .86rem; line-height: 1.2; padding: .6rem .9rem; text-align: center; text-decoration: none; white-space: nowrap; }
+	@media (max-width: 480px) {
+		.header-actions { gap: .4rem; }
+		.appointment-link, .chat-header .quiet-button { font-size: .8rem; line-height: 1.2; padding: .5rem .65rem; }
+	}
 	.v2-shell { background: var(--vp-page-bg); color: var(--vp-text); display: flex; flex-direction: column; font-family: var(--vp-font-family); height: 100vh; height: 100svh; min-height: 0; }
 	.chat-header { align-items: center; background: var(--vp-surface); border-bottom: 1px solid var(--vp-border); display: flex; flex: none; justify-content: space-between; min-height: 4rem; padding: max(.55rem, env(safe-area-inset-top)) 1rem .55rem; }
 	.title-lockup { align-items: center; display: flex; gap: .7rem; min-width: 0; }
