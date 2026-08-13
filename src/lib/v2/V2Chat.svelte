@@ -1575,9 +1575,7 @@
 			{#if ui.appointmentCta}
 				<div class="schedule-strip">
 					<p>Ready to book a vaccine appointment?</p>
-					<!-- Visible text is compact presentation; the configured label stays
-					the accessible name (fold into config copy at the next revision). -->
-					<a data-testid="appointment-cta" href={ui.appointmentCta.url} target="_blank" rel="noopener noreferrer" title={ui.appointmentCta.label} aria-label={`${ui.appointmentCta.label} (opens the pharmacy site in a new tab)`}><span aria-hidden="true">Schedule now ↗</span></a>
+					<a data-testid="appointment-cta" href={ui.appointmentCta.url} target="_blank" rel="noopener noreferrer" aria-label={`${ui.appointmentCta.label} (opens the pharmacy site in a new tab)`}><span aria-hidden="true">{ui.appointmentCta.label} ↗</span></a>
 				</div>
 			{/if}
 

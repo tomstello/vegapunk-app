@@ -90,6 +90,11 @@ const V8_CONFIG_HASHES = Object.freeze({
 	covid: '20c698da19a6c72c98d3809b592a393c3afe6b9607a1ca2bf59ed18651126ab1',
 	combo: '42d2a47ccdcff423f1e252f66bdc6bb1d312ca3b7d08059015c4ba959e65b74b'
 });
+const V9_CONFIG_HASHES = Object.freeze({
+	flu: '92489bb87dcf4e90735df23c8ed9c060b97aca0c0deffc30459ef7fc681ee8c8',
+	covid: '40a1b7772f12fce08568715a8d35c028e94cec69b469983c33d689a16a3d4da6',
+	combo: 'a2d8e44c87100bfbc3c7a9ff8fe1d5c8479bdd4829ae86a71166efbd2c096c82'
+});
 const V7_CONFIG_HASHES = Object.freeze({
 	flu: '0da70cec1ff637fa73b9108b678c6a18503e56abeb57f5d04cf0a184c76e9bda',
 	covid: '5444d5f3d12a91384ba427d3e84baf0c5361c631dd09d0eb713a17f373a5c5b7',
@@ -264,12 +269,16 @@ test('fixed registry exposes public UI but not the prompt or provider configurat
 		const config = configs.getStudyConfig(arm);
 		const publicConfig = configs.getPublicStudyConfig(config);
 		assert.equal(config.condition, arm);
-		assert.equal(config.configVersion, `albertsons-2026-${arm}-v8`);
-		assert.equal(config.configHash, V8_CONFIG_HASHES[arm]);
+		assert.equal(config.configVersion, `albertsons-2026-${arm}-v9`);
+		assert.equal(config.configHash, V9_CONFIG_HASHES[arm]);
 		assert.deepEqual(publicConfig.ui.appointmentCta, {
-			label: 'Schedule a vaccine appointment',
+			label: 'Schedule now',
 			url: 'https://www.albertsons.com/health/appointments/home'
 		});
+		assert.equal(
+			publicConfig.ui.privacyNote,
+			'For your privacy, don’t share identifying details such as your name or address. This AI tool can make mistakes; ask a doctor or pharmacist about personal health concerns.'
+		);
 		assert.match(publicConfig.initialMessages[0].id, /^[a-f0-9-]{36}$/);
 		assert.equal(publicConfig.ui.themeId, 'albertsons-v1');
 		assert.equal(publicConfig.ui.headerSubtitle, 'Ask a question or browse common topics');
@@ -403,8 +412,8 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 			allow_fallbacks: true,
 			require_parameters: true
 		});
-		assert.equal(active.configVersion, `albertsons-2026-${arm}-v8`);
-		assert.equal(active.configHash, V8_CONFIG_HASHES[arm]);
+		assert.equal(active.configVersion, `albertsons-2026-${arm}-v9`);
+		assert.equal(active.configHash, V9_CONFIG_HASHES[arm]);
 		assert.equal(active.model.name, 'anthropic/claude-opus-5');
 		assert.deepEqual(active.model.reasoning, { effort: 'low', exclude: true });
 		assert.equal(active.runtimePolicy.providerMaxAttempts, 1);
@@ -426,6 +435,14 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 			['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB', 'CITY']
 		);
 		assert.equal(active.scrubber.prompt.includes('- CITY: city, town, county'), true);
+
+		const previousV8 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v8`,
+			V8_CONFIG_HASHES[arm]
+		);
+		assert.ok(previousV8, `${arm} prior v8 revision must remain resumable`);
+		assert.match(previousV8.ui.privacyNote, /and provides general information/);
 
 		const previousV7 = configs.getStudyConfigRevision(
 			arm,

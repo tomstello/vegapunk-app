@@ -366,7 +366,9 @@ function legacyV1Ui(condition: StudyCondition): PublicStudyUi {
 function albertsonsV1Ui(
 	condition: StudyCondition,
 	suggestedQuestions: readonly string[] = armPresentation[condition].suggestedQuestions,
-	appointmentCta?: { label: string; url: string }
+	appointmentCta?: { label: string; url: string },
+	// Default reproduces v2-v8 hashes byte-for-byte; v9+ passes revised copy.
+	privacyNote: string = 'For your privacy, don\u2019t share identifying details such as your name or address. This AI tool can make mistakes and provides general information; ask a doctor or pharmacist about personal health concerns.'
 ): PublicStudyUi {
 	return {
 		themeId: 'albertsons-v1',
@@ -374,8 +376,7 @@ function albertsonsV1Ui(
 		headerSubtitle: 'Ask a question or browse common topics',
 		placeholderInputText: 'Write your vaccine question',
 		endChatText: 'End chat',
-		privacyNote:
-			'For your privacy, don\u2019t share identifying details such as your name or address. This AI tool can make mistakes and provides general information; ask a doctor or pharmacist about personal health concerns.',
+		privacyNote,
 		suggestedQuestions: [...suggestedQuestions],
 		maxUserMessages: 35,
 		...(appointmentCta ? { appointmentCta } : {})
@@ -657,6 +658,15 @@ const OPUS5_RUNTIME_POLICY = Object.freeze({
 	providerMaxAttempts: 1
 });
 
+// v9 copy (Tom, 2026-08-14): privacy note drops "and provides general
+// information"; scheduling button label becomes the literal visible text.
+const V9_PRIVACY_NOTE =
+	'For your privacy, don\u2019t share identifying details such as your name or address. This AI tool can make mistakes; ask a doctor or pharmacist about personal health concerns.';
+const V9_APPOINTMENT_CTA = Object.freeze({
+	label: 'Schedule now',
+	url: 'https://www.albertsons.com/health/appointments/home'
+});
+
 const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 	flu: [
 		makeConfig('flu', V5_SHARED_SYSTEM_PROMPT, LEGACY_PROVIDER_POLICY, PRE_280K_RUNTIME_POLICY),
@@ -702,6 +712,13 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 					label: 'Schedule a vaccine appointment',
 					url: 'https://www.albertsons.com/health/appointments/home'
 				}),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				scrubber: SCRUBBER_V2
+			}),
+			makeConfig('flu', V8_SHARED_SYSTEM_PROMPT, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-flu-v9',
+				ui: albertsonsV1Ui('flu', SET_B_SUGGESTED_QUESTIONS.flu, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
 				scrubber: SCRUBBER_V2
@@ -754,6 +771,13 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
 				scrubber: SCRUBBER_V2
+			}),
+			makeConfig('covid', V8_SHARED_SYSTEM_PROMPT, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-covid-v9',
+				ui: albertsonsV1Ui('covid', SET_B_SUGGESTED_QUESTIONS.covid, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				scrubber: SCRUBBER_V2
 			})
 	],
 	combo: [
@@ -800,6 +824,13 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 					label: 'Schedule a vaccine appointment',
 					url: 'https://www.albertsons.com/health/appointments/home'
 				}),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				scrubber: SCRUBBER_V2
+			}),
+			makeConfig('combo', V8_SHARED_SYSTEM_PROMPT, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-combo-v9',
+				ui: albertsonsV1Ui('combo', SET_B_SUGGESTED_QUESTIONS.combo, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
 				scrubber: SCRUBBER_V2
