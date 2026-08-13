@@ -1,5 +1,5 @@
 {
-  "description": "Labeled synthetic vaccine-chat turns for scrubber recall/precision evaluation. `expected` lists spans that MUST be redacted (category from the v7 policy); an empty list means nothing in the text may be redacted (false-positive guard). CITY/region is deliberately NOT a category (research-team decision 2026-08-12): city and county mentions must survive scrubbing. `history` entries are prior REDACTED user turns supplying coreference context.",
+  "description": "Labeled synthetic vaccine-chat turns for scrubber recall/precision evaluation. `expected` lists spans that MUST be redacted (category from the v7 policy); an empty list means nothing in the text may be redacted (false-positive guard). CITY/region IS a category again (team decision 2026-08-13: city+age+condition details is a re-identification triad; supersedes 2026-08-12). `history` entries are prior REDACTED user turns supplying coreference context.",
   "cases": [
     {
       "id": "name-plain",
@@ -146,6 +146,10 @@
         {
           "text": "88 Cherry Lane",
           "category": "ADDRESS"
+        },
+        {
+          "text": "Meridian",
+          "category": "CITY"
         }
       ]
     },
@@ -190,19 +194,34 @@
       ]
     },
     {
-      "id": "neg-city-plain",
+      "id": "city-plain",
       "text": "Here in Boise, where can I get the shot?",
-      "expected": []
+      "expected": [
+        {
+          "text": "Boise",
+          "category": "CITY"
+        }
+      ]
     },
     {
-      "id": "neg-city-county",
+      "id": "city-county",
       "text": "Is there flu activity in Ada County right now?",
-      "expected": []
+      "expected": [
+        {
+          "text": "Ada County",
+          "category": "CITY"
+        }
+      ]
     },
     {
-      "id": "neg-city-neighborhood",
+      "id": "city-neighborhood",
       "text": "I just moved to the North End, anywhere close by?",
-      "expected": []
+      "expected": [
+        {
+          "text": "North End",
+          "category": "CITY"
+        }
+      ]
     },
     {
       "id": "combo-heavy",
@@ -223,16 +242,25 @@
         {
           "text": "208-555-7761",
           "category": "PHONE"
+        },
+        {
+          "text": "Nampa",
+          "category": "CITY"
         }
       ]
     },
     {
-      "id": "neg-city-context",
+      "id": "context-city",
       "history": [
         "Where can I get a flu shot near my house?"
       ],
       "text": "Are there evening hours anywhere in Boise?",
-      "expected": []
+      "expected": [
+        {
+          "text": "Boise",
+          "category": "CITY"
+        }
+      ]
     },
     {
       "id": "context-name-reuse",

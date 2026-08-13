@@ -1672,6 +1672,11 @@
 
 			{#if !state.chatEndISO && state.lifecycle !== "completed" && !(state.lifecycle === "interrupted" && !failedAssistant)}
 				<footer class="composer-area">
+					{#if ui.appointmentCta}
+						<p class="appointment-cta">
+							<a class="secondary-button appointment-link" data-testid="appointment-cta" href={ui.appointmentCta.url} target="_blank" rel="noopener noreferrer">{ui.appointmentCta.label}<span aria-hidden="true"> ↗</span><span class="sr-only"> (opens the pharmacy site in a new tab)</span></a>
+						</p>
+					{/if}
 					{#if showSuggestions}
 						<p class="suggestions-label">Examples of questions you can ask</p>
 						<div class="suggestions" data-testid="suggested-questions" role="group" aria-label="Examples of questions you can ask">
@@ -1702,6 +1707,8 @@
 	:global(html), :global(body) { margin: 0; min-height: 100%; background: #f7fafc; }
 	:global(body) { color: #172033; }
 	:global(*) { box-sizing: border-box; }
+	.appointment-cta { margin: 0 0 10px; }
+	.appointment-link { display: inline-block; text-decoration: none; }
 	.v2-shell { background: var(--vp-page-bg); color: var(--vp-text); display: flex; flex-direction: column; font-family: var(--vp-font-family); height: 100vh; height: 100svh; min-height: 0; }
 	.chat-header { align-items: center; background: var(--vp-surface); border-bottom: 1px solid var(--vp-border); display: flex; flex: none; justify-content: space-between; min-height: 4rem; padding: max(.55rem, env(safe-area-inset-top)) 1rem .55rem; }
 	.title-lockup { align-items: center; display: flex; gap: .7rem; min-width: 0; }

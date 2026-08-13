@@ -21,6 +21,10 @@ export type PublicStudyUi = {
 	privacyNote: string;
 	suggestedQuestions: string[];
 	maxUserMessages: number;
+	// Optional so pre-v8 hashes reproduce byte-for-byte. Persistent scheduling
+	// button (partner request 2026-08-13); rendered by the client whenever the
+	// composer is available, uniform across arms and turns.
+	appointmentCta?: { label: string; url: string };
 };
 
 // The scrubber model is deliberately a separate closed type: widening the
@@ -361,7 +365,8 @@ function legacyV1Ui(condition: StudyCondition): PublicStudyUi {
 
 function albertsonsV1Ui(
 	condition: StudyCondition,
-	suggestedQuestions: readonly string[] = armPresentation[condition].suggestedQuestions
+	suggestedQuestions: readonly string[] = armPresentation[condition].suggestedQuestions,
+	appointmentCta?: { label: string; url: string }
 ): PublicStudyUi {
 	return {
 		themeId: 'albertsons-v1',
@@ -372,7 +377,8 @@ function albertsonsV1Ui(
 		privacyNote:
 			'For your privacy, don\u2019t share identifying details such as your name or address. This AI tool can make mistakes and provides general information; ask a doctor or pharmacist about personal health concerns.',
 		suggestedQuestions: [...suggestedQuestions],
-		maxUserMessages: 35
+		maxUserMessages: 35,
+		...(appointmentCta ? { appointmentCta } : {})
 	};
 }
 
@@ -507,6 +513,40 @@ const SCRUBBER_V1_FALLBACK_MODEL: ScrubberModel = Object.freeze({
 	reasoning: { effort: 'low', exclude: true } as const
 });
 
+// Team decision 2026-08-13 (Jan/Sean/Joseph, Tom concurring): CITY restored
+// as a scrub category — city plus age plus condition details is a classic
+// re-identification triad. Supersedes the 2026-08-12 keep-city decision.
+// v7's frozen constants above must not change; v8 gets its own copies.
+const SCRUB_CATEGORIES_V2 = Object.freeze([
+	'NAME',
+	'PHONE',
+	'EMAIL',
+	'ADDRESS',
+	'ID',
+	'DOB',
+	'CITY'
+] as const);
+
+const SCRUBBER_PROMPT_V2 = SCRUBBER_PROMPT_V1
+	.replace(
+		"- DOB: full or partial dates of birth. A bare age in years is NOT a DOB.\n",
+		"- DOB: full or partial dates of birth. A bare age in years is NOT a DOB.\n- CITY: city, town, county, region, or neighborhood names that indicate where a person lives, works, or will be.\n"
+	)
+	.replace(
+		'Do NOT report: city, town, county, region, or neighborhood names on their own (location stays unless it reaches street/address precision, which is ADDRESS); vaccine',
+		'Do NOT report: vaccine'
+	)
+	.replace('<NAME|PHONE|EMAIL|ADDRESS|ID|DOB>', '<NAME|PHONE|EMAIL|ADDRESS|ID|DOB|CITY>');
+
+const SCRUBBER_V2: ScrubberConfig = Object.freeze({
+	model: SCRUBBER_V1_PRIMARY_MODEL,
+	fallbackModel: SCRUBBER_V1_FALLBACK_MODEL,
+	prompt: SCRUBBER_PROMPT_V2,
+	categories: SCRUB_CATEGORIES_V2,
+	timeoutMs: 8_000,
+	maxAttempts: 2
+});
+
 const SCRUBBER_V1: ScrubberConfig = Object.freeze({
 	model: SCRUBBER_V1_PRIMARY_MODEL,
 	fallbackModel: SCRUBBER_V1_FALLBACK_MODEL,
@@ -528,6 +568,20 @@ const V7_SCRUB_PROMPT_ADDENDUM = `# PRIVACY REDACTION HANDLING
 User messages pass through an automated privacy screen before you receive them. Identifying details are replaced with placeholders such as [NAME_1], [PHONE_1], or [ADDRESS_1].
 - Treat a placeholder as the detail it stands for, but never repeat placeholders back in your answers; respond naturally without using participants' names or contact details.
 - If a user shares personal details, do not repeat them back; where it fits naturally, briefly note that personal details are not needed to answer their questions.`;
+
+const V8_SCRUB_PROMPT_ADDENDUM = `# PRIVACY REDACTION HANDLING
+User messages pass through an automated privacy screen before you receive them. Identifying details are replaced with placeholders such as [NAME_1], [CITY_1], or [PHONE_1].
+- Treat a placeholder as the detail it stands for, but never repeat placeholders back in your answers; respond naturally without using names, locations, or contact details.
+- If a user shares personal details, do not repeat them back; where it fits naturally, briefly note that personal details are not needed to answer their questions.`;
+
+// Partner request 2026-08-13: scheduling path. The same link is presented as
+// a persistent button in the interface (ui.appointmentCta) and in the static
+// FAQ arm, so exposure is uniform; this instruction covers the conversational
+// route to it.
+const V8_SCHEDULING_GUIDANCE = `# SCHEDULING APPOINTMENTS
+If the user wants to schedule a vaccine appointment, or asks where or how to book one, direct them to https://www.albertsons.com/health/appointments/home (also available via the "Schedule a vaccine appointment" button in this tool). Do not attempt to book anything yourself or collect any details for booking.`;
+
+const V8_SHARED_SYSTEM_PROMPT = `${V5_SHARED_SYSTEM_PROMPT}\n\n${V8_SCRUB_PROMPT_ADDENDUM}\n\n${V8_SCHEDULING_GUIDANCE}`;
 
 const V7_SHARED_SYSTEM_PROMPT = `${V5_SHARED_SYSTEM_PROMPT}\n\n${V7_SCRUB_PROMPT_ADDENDUM}`;
 
@@ -641,6 +695,16 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
 				scrubber: SCRUBBER_V1
+			}),
+			makeConfig('flu', V8_SHARED_SYSTEM_PROMPT, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-flu-v8',
+				ui: albertsonsV1Ui('flu', SET_B_SUGGESTED_QUESTIONS.flu, {
+					label: 'Schedule a vaccine appointment',
+					url: 'https://www.albertsons.com/health/appointments/home'
+				}),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				scrubber: SCRUBBER_V2
 			})
 	],
 	covid: [
@@ -680,6 +744,16 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
 				scrubber: SCRUBBER_V1
+			}),
+			makeConfig('covid', V8_SHARED_SYSTEM_PROMPT, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-covid-v8',
+				ui: albertsonsV1Ui('covid', SET_B_SUGGESTED_QUESTIONS.covid, {
+					label: 'Schedule a vaccine appointment',
+					url: 'https://www.albertsons.com/health/appointments/home'
+				}),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				scrubber: SCRUBBER_V2
 			})
 	],
 	combo: [
@@ -719,6 +793,16 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
 				scrubber: SCRUBBER_V1
+			}),
+			makeConfig('combo', V8_SHARED_SYSTEM_PROMPT, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-combo-v8',
+				ui: albertsonsV1Ui('combo', SET_B_SUGGESTED_QUESTIONS.combo, {
+					label: 'Schedule a vaccine appointment',
+					url: 'https://www.albertsons.com/health/appointments/home'
+				}),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				scrubber: SCRUBBER_V2
 			})
 	]
 };

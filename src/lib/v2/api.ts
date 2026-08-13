@@ -116,6 +116,22 @@ function cleanUi(value: unknown): SessionResponse["ui"] | null {
 		if (value.maxUserMessages !== 35) return null;
 		ui.maxUserMessages = value.maxUserMessages;
 	}
+	if (value.appointmentCta !== undefined) {
+		// Server-owned partner link; the client still pins the destination to
+		// the partner's site so no other host can ever ride this button.
+		const cta = value.appointmentCta;
+		if (
+			!isRecord(cta) ||
+			typeof cta.label !== "string" ||
+			cta.label.length < 1 ||
+			cta.label.length > 100 ||
+			typeof cta.url !== "string" ||
+			cta.url.length > 300 ||
+			!cta.url.startsWith("https://www.albertsons.com/")
+		)
+			return null;
+		ui.appointmentCta = { label: cta.label, url: cta.url };
+	}
 	if (value.suggestedQuestions !== undefined) {
 		if (
 			!Array.isArray(value.suggestedQuestions) ||

@@ -109,7 +109,14 @@ export interface V2Snapshot {
 	captureErrors: CaptureError[];
 }
 
+export interface AppointmentCta {
+	label: string;
+	url: string;
+}
+
 export interface PublicUiConfig {
+	// Persistent partner scheduling button (v8+); absent on older revisions.
+	appointmentCta?: AppointmentCta;
 	themeId: PartnerThemeId;
 	headerTitle: string;
 	headerSubtitle: string;

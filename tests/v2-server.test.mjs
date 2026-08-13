@@ -85,6 +85,11 @@ const V6_CONFIG_HASHES = Object.freeze({
 	covid: '40b6fcb003b40a884a3cd8be028d332d3ce3c88b3afa46bd216aad40e61cbf7e',
 	combo: 'a489f4f8f33a017a1263d96aeeceb9afb4880f4ea423e6e86adede2910d75d3f'
 });
+const V8_CONFIG_HASHES = Object.freeze({
+	flu: 'aa876242c0809ae397258b7f55e54f7eaf4786cc004b051126bc6ed16543a86c',
+	covid: '4fd15d0fad1540e47135f1cad40f752354871d40a4af6ca61f2715b38e00ab0a',
+	combo: 'de19844b309d93f46b6439fbdfd656611e70e45ada4581ab9283116976135802'
+});
 const V7_CONFIG_HASHES = Object.freeze({
 	flu: '0da70cec1ff637fa73b9108b678c6a18503e56abeb57f5d04cf0a184c76e9bda',
 	covid: '5444d5f3d12a91384ba427d3e84baf0c5361c631dd09d0eb713a17f373a5c5b7',
@@ -259,8 +264,12 @@ test('fixed registry exposes public UI but not the prompt or provider configurat
 		const config = configs.getStudyConfig(arm);
 		const publicConfig = configs.getPublicStudyConfig(config);
 		assert.equal(config.condition, arm);
-		assert.equal(config.configVersion, `albertsons-2026-${arm}-v7`);
-		assert.equal(config.configHash, V7_CONFIG_HASHES[arm]);
+		assert.equal(config.configVersion, `albertsons-2026-${arm}-v8`);
+		assert.equal(config.configHash, V8_CONFIG_HASHES[arm]);
+		assert.deepEqual(publicConfig.ui.appointmentCta, {
+			label: 'Schedule a vaccine appointment',
+			url: 'https://www.albertsons.com/health/appointments/home'
+		});
 		assert.match(publicConfig.initialMessages[0].id, /^[a-f0-9-]{36}$/);
 		assert.equal(publicConfig.ui.themeId, 'albertsons-v1');
 		assert.equal(publicConfig.ui.headerSubtitle, 'Ask a question or browse common topics');
@@ -297,13 +306,13 @@ test('all arms share one prompt: v5 intervention text plus exactly the scrub add
 	const normalized = normalize(prompts[0]);
 	assert.equal(
 		createHash('sha256').update(normalized, 'utf8').digest('hex'),
-		'0565388311fe9ae274e40cef272d0d50a0bfd8913155f067f6d9f8bd2724adcd'
+		'6c0706c2c3ee0bb41c3b3ad2df3899c94b49c9cc3d8c1d1ba9f253df87fd6407'
 	);
 	assert.equal(normalized.includes('# INSTRUCTION AND SAFETY BOUNDARY'), false);
 
 	// The active prompt must be the retained v6 prompt (whose normalized text
-	// is the approved v5 intervention, sha dbac1718...) plus exactly one
-	// addendum block introduced by the scrub revision — nothing else edited.
+	// is the approved v5 intervention, sha dbac1718...) plus exactly the two
+	// v8 addenda (privacy handling, scheduling) — nothing else edited.
 	for (const arm of ['flu', 'covid', 'combo']) {
 		const v6 = configs.getStudyConfigRevision(
 			arm,
@@ -316,10 +325,12 @@ test('all arms share one prompt: v5 intervention text plus exactly the scrub add
 			'dbac171816c6004507b67a199cb5a2c53b6486798b6961ac1c259e63b95ea626'
 		);
 		const active = configs.getStudyConfig(arm).systemPrompt;
-		assert.ok(active.startsWith(v6.systemPrompt), 'v7 prompt must extend, not edit, the v6 prompt');
-		const addendum = active.slice(v6.systemPrompt.length);
-		assert.match(addendum, /^\n\n# PRIVACY REDACTION HANDLING\n/);
-		assert.equal(addendum.includes('never repeat placeholders back'), true);
+		assert.ok(active.startsWith(v6.systemPrompt), 'v8 prompt must extend, not edit, the intervention body');
+		const addenda = active.slice(v6.systemPrompt.length);
+		assert.match(addenda, /^\n\n# PRIVACY REDACTION HANDLING\n[\s\S]*\n\n# SCHEDULING APPOINTMENTS\n/);
+		assert.equal(addenda.includes('never repeat placeholders back'), true);
+		assert.equal(addenda.includes('https://www.albertsons.com/health/appointments/home'), true);
+		assert.equal(addenda.includes('Do not attempt to book anything yourself'), true);
 	}
 });
 
@@ -392,8 +403,8 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 			allow_fallbacks: true,
 			require_parameters: true
 		});
-		assert.equal(active.configVersion, `albertsons-2026-${arm}-v7`);
-		assert.equal(active.configHash, V7_CONFIG_HASHES[arm]);
+		assert.equal(active.configVersion, `albertsons-2026-${arm}-v8`);
+		assert.equal(active.configHash, V8_CONFIG_HASHES[arm]);
 		assert.equal(active.model.name, 'anthropic/claude-opus-5');
 		assert.deepEqual(active.model.reasoning, { effort: 'low', exclude: true });
 		assert.equal(active.runtimePolicy.providerMaxAttempts, 1);
@@ -412,8 +423,18 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 		// keeps city-level text for conversational quality and analytic signal.
 		assert.deepEqual(
 			[...active.scrubber.categories],
-			['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB']
+			['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB', 'CITY']
 		);
+		assert.equal(active.scrubber.prompt.includes('- CITY: city, town, county'), true);
+
+		const previousV7 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v7`,
+			V7_CONFIG_HASHES[arm]
+		);
+		assert.ok(previousV7, `${arm} prior scrub revision must remain resumable`);
+		assert.equal([...previousV7.scrubber.categories].includes('CITY'), false);
+		assert.equal('appointmentCta' in previousV7.ui, false);
 		// Cross-vendor secondary rides the same two US ZDR routes as Opus 5,
 		// so one endpoint-inventory ritual still covers every model in use.
 		assert.ok(active.scrubber.fallbackModel, `${arm} scrubber must configure a fallback model`);

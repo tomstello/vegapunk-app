@@ -67,7 +67,7 @@ async def install_api_routes(
             "sessionToken": TOKEN,
             "sessionKey": request["chatSessionKey"],
             "condition": condition,
-            "configVersion": requested.get("configVersion", f"albertsons-2026-{condition}-v7"),
+            "configVersion": requested.get("configVersion", f"albertsons-2026-{condition}-v8"),
             "configHash": selected_hash,
             "initialMessages": [
                 {
@@ -85,6 +85,10 @@ async def install_api_routes(
                 "suggestedQuestions": list(suggested_questions),
                 "endChatText": "End chat",
                 "maxUserMessages": 35,
+                "appointmentCta": {
+                    "label": "Schedule a vaccine appointment",
+                    "url": "https://www.albertsons.com/health/appointments/home",
+                },
             },
             "historyTag": HISTORY,
         }
@@ -185,6 +189,10 @@ async def test_sanitizer_reload_and_terminal(browser):
     _, checkpoints = await install_api_routes(page)
     await page.goto(f"{BASE}/study/albertsons-2026/flu", wait_until="networkidle")
     await page.get_by_test_id("message-list").wait_for()
+    cta = page.get_by_test_id("appointment-cta")
+    assert await cta.count() == 1
+    assert await cta.get_attribute("href") == "https://www.albertsons.com/health/appointments/home"
+    assert await cta.get_attribute("target") == "_blank"
     assert await page.locator("details").count() == 1
     assert await page.locator("summary").inner_text() == "Vaccine FAQ"
     initial_content = page.get_by_test_id("assistant-content").first
@@ -342,7 +350,7 @@ async def test_parent_persist_is_nonterminal_and_reason_survives_reload(browser)
           if (data.type === 'vegapunk:hello') {{
             const init = {{v:2,type:'qualtrics:init',condition:'flu',helloNonce:data.helloNonce,
               nonce:'{protocol_nonce}',sessionKey:'{session_key}',attemptNonce:'{attempt_nonce}',
-              expectedConfigVersion:'albertsons-2026-flu-v7',parentOrigin:location.origin,sequence:0}};
+              expectedConfigVersion:'albertsons-2026-flu-v8',parentOrigin:location.origin,sequence:0}};
             if (window.lastTerminalReason) init.terminalReason = window.lastTerminalReason;
             event.source.postMessage(init, location.origin);
           }}
@@ -682,7 +690,7 @@ async def test_prompt_hotfix_preserves_inflight_session(browser):
     await page.reload(wait_until="networkidle")
     await page.get_by_test_id("question-input").wait_for()
     assert sessions[-1]["resumeConfig"] == {
-        "configVersion": "albertsons-2026-flu-v7",
+        "configVersion": "albertsons-2026-flu-v8",
         "configHash": old_hash,
     }
     assert await page.get_by_text("Question before prompt hotfix", exact=True).count() == 1

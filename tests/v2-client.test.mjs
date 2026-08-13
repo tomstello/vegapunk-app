@@ -143,7 +143,7 @@ test('session UI accepts only closed themes and retained v1 resumes remain parse
 		sessionToken: 'signed-session-token-for-theme-test-1234567890',
 		sessionKey,
 		condition: 'flu',
-		configVersion: 'albertsons-2026-flu-v7',
+		configVersion: 'albertsons-2026-flu-v8',
 		configHash: 'a'.repeat(64),
 		initialMessages: [],
 		ui: {
@@ -161,6 +161,21 @@ test('session UI accepts only closed themes and retained v1 resumes remain parse
 		const active = await api.createPublicSession('flu', sessionKey, attemptNonce);
 		assert.equal(active.ui.themeId, 'albertsons-v1');
 		assert.equal(active.ui.headerSubtitle, 'Ask a question or browse common topics');
+
+		response.ui.themeId = 'albertsons-v1';
+		response.ui.appointmentCta = {
+			label: 'Schedule a vaccine appointment',
+			url: 'https://www.albertsons.com/health/appointments/home'
+		};
+		const withCta = await api.createPublicSession('flu', sessionKey, attemptNonce);
+		assert.deepEqual(withCta.ui.appointmentCta, response.ui.appointmentCta);
+
+		response.ui.appointmentCta = { label: 'Book now', url: 'https://evil.example/book' };
+		await assert.rejects(
+			api.createPublicSession('flu', sessionKey, attemptNonce),
+			(error) => error.code === 'session_invalid_schema'
+		);
+		delete response.ui.appointmentCta;
 
 		response.ui.themeId = 'participant-supplied-css';
 		await assert.rejects(
