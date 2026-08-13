@@ -1567,7 +1567,10 @@
 				</div>
 				<div class="header-actions">
 					{#if ui.appointmentCta}
-						<a class="primary-button appointment-link" data-testid="appointment-cta" href={ui.appointmentCta.url} target="_blank" rel="noopener noreferrer">{ui.appointmentCta.label}<span aria-hidden="true"> ↗</span><span class="sr-only"> (opens the pharmacy site in a new tab)</span></a>
+						<!-- Visible text is a compact presentation; the configured label stays
+						the accessible name (and canonical copy — fold "Schedule now" into
+						the config label at the next revision). -->
+						<a class="primary-button appointment-link" data-testid="appointment-cta" href={ui.appointmentCta.url} target="_blank" rel="noopener noreferrer" title={ui.appointmentCta.label} aria-label={`${ui.appointmentCta.label} (opens the pharmacy site in a new tab)`}><span aria-hidden="true">Schedule now ↗</span></a>
 					{/if}
 					{#if state.lifecycle !== "completed" && !state.chatEndISO}
 						{#if !endConfirmationOpen}
@@ -1708,7 +1711,7 @@
 	:global(body) { color: #172033; }
 	:global(*) { box-sizing: border-box; }
 	.header-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; }
-	.appointment-link { display: inline-block; text-align: center; text-decoration: none; }
+	.appointment-link { display: inline-block; flex: none; font-size: .86rem; padding: .6rem .9rem; text-align: center; text-decoration: none; white-space: nowrap; }
 	.v2-shell { background: var(--vp-page-bg); color: var(--vp-text); display: flex; flex-direction: column; font-family: var(--vp-font-family); height: 100vh; height: 100svh; min-height: 0; }
 	.chat-header { align-items: center; background: var(--vp-surface); border-bottom: 1px solid var(--vp-border); display: flex; flex: none; justify-content: space-between; min-height: 4rem; padding: max(.55rem, env(safe-area-inset-top)) 1rem .55rem; }
 	.title-lockup { align-items: center; display: flex; gap: .7rem; min-width: 0; }
