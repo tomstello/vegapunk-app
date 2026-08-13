@@ -86,9 +86,9 @@ const V6_CONFIG_HASHES = Object.freeze({
 	combo: 'a489f4f8f33a017a1263d96aeeceb9afb4880f4ea423e6e86adede2910d75d3f'
 });
 const V8_CONFIG_HASHES = Object.freeze({
-	flu: 'aa876242c0809ae397258b7f55e54f7eaf4786cc004b051126bc6ed16543a86c',
-	covid: '4fd15d0fad1540e47135f1cad40f752354871d40a4af6ca61f2715b38e00ab0a',
-	combo: 'de19844b309d93f46b6439fbdfd656611e70e45ada4581ab9283116976135802'
+	flu: 'c11f8a9600bfdef50e9455af1442f4a76191378ac65a9c2724f07aa439c4e9b8',
+	covid: '20c698da19a6c72c98d3809b592a393c3afe6b9607a1ca2bf59ed18651126ab1',
+	combo: '42d2a47ccdcff423f1e252f66bdc6bb1d312ca3b7d08059015c4ba959e65b74b'
 });
 const V7_CONFIG_HASHES = Object.freeze({
 	flu: '0da70cec1ff637fa73b9108b678c6a18503e56abeb57f5d04cf0a184c76e9bda',
@@ -306,7 +306,7 @@ test('all arms share one prompt: v5 intervention text plus exactly the scrub add
 	const normalized = normalize(prompts[0]);
 	assert.equal(
 		createHash('sha256').update(normalized, 'utf8').digest('hex'),
-		'6c0706c2c3ee0bb41c3b3ad2df3899c94b49c9cc3d8c1d1ba9f253df87fd6407'
+		'230a293457202fe0eb61d81c06397dc902c1325b60e61e58ec0ac30a0df79931'
 	);
 	assert.equal(normalized.includes('# INSTRUCTION AND SAFETY BOUNDARY'), false);
 

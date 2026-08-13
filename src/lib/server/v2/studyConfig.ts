@@ -579,7 +579,7 @@ User messages pass through an automated privacy screen before you receive them. 
 // FAQ arm, so exposure is uniform; this instruction covers the conversational
 // route to it.
 const V8_SCHEDULING_GUIDANCE = `# SCHEDULING APPOINTMENTS
-If the user wants to schedule a vaccine appointment, or asks where or how to book one, direct them to https://www.albertsons.com/health/appointments/home (also available via the "Schedule a vaccine appointment" button in this tool). Do not attempt to book anything yourself or collect any details for booking.`;
+If the user wants to schedule a vaccine appointment, or asks where or how to get vaccinated or how to book an appointment, direct them to https://www.albertsons.com/health/appointments/home (also available via the "Schedule a vaccine appointment" button in this tool). Do not attempt to book anything yourself or collect any details for booking.`;
 
 const V8_SHARED_SYSTEM_PROMPT = `${V5_SHARED_SYSTEM_PROMPT}\n\n${V8_SCRUB_PROMPT_ADDENDUM}\n\n${V8_SCHEDULING_GUIDANCE}`;
 
