@@ -268,7 +268,7 @@ export class ParentBridge {
 		});
 	}
 
-	sendActivity(kind: "input" | "reading" | "submit" | "retry" | "end"): void {
+	sendActivity(kind: "input" | "reading" | "submit" | "retry" | "end" | "appointment_click"): void {
 		this.send({ type: "vegapunk:activity", kind });
 	}
 

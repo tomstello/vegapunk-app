@@ -1575,7 +1575,7 @@
 			{#if ui.appointmentCta}
 				<div class="schedule-strip">
 					<p>Ready to book a vaccine appointment?</p>
-					<a data-testid="appointment-cta" href={ui.appointmentCta.url} target="_blank" rel="noopener noreferrer" aria-label={`${ui.appointmentCta.label} (opens the pharmacy site in a new tab)`}><span aria-hidden="true">{ui.appointmentCta.label} ↗</span></a>
+					<a data-testid="appointment-cta" href={ui.appointmentCta.url} target="_blank" rel="noopener noreferrer" on:click={() => bridge?.sendActivity("appointment_click")} aria-label={`${ui.appointmentCta.label} (opens the pharmacy site in a new tab)`}><span aria-hidden="true">{ui.appointmentCta.label} ↗</span></a>
 				</div>
 			{/if}
 
