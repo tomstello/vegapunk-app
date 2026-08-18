@@ -1,6 +1,8 @@
 export const CONDITIONS = ["flu", "covid", "combo", "demo"] as const;
 
-export const PARTNER_THEME_IDS = ["neutral-v1", "albertsons-v1"] as const;
+// "clinical-blue-v1" is a partner-neutral alias of the albertsons-v1 token set
+// (identical CSS) for surfaces that must not name the partner (public demo).
+export const PARTNER_THEME_IDS = ["neutral-v1", "albertsons-v1", "clinical-blue-v1"] as const;
 
 export type StudyCondition = (typeof CONDITIONS)[number];
 export type PartnerThemeId = (typeof PARTNER_THEME_IDS)[number];

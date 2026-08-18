@@ -389,10 +389,11 @@ function albertsonsV1Ui(
 	appointmentCta?: { label: string; url: string },
 	// Default reproduces v2-v8 hashes byte-for-byte; v9+ passes revised copy.
 	privacyNote: string = 'For your privacy, don\u2019t share identifying details such as your name or address. This AI tool can make mistakes and provides general information; ask a doctor or pharmacist about personal health concerns.',
-	maxUserMessages = 35
+	maxUserMessages = 35,
+	themeId: PartnerThemeId = 'albertsons-v1'
 ): PublicStudyUi {
 	return {
-		themeId: 'albertsons-v1',
+		themeId,
 		headerTitle: V2_HEADER_TITLES[condition],
 		headerSubtitle: 'Ask a question or browse common topics',
 		placeholderInputText: 'Write your vaccine question',
@@ -824,7 +825,7 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 	demo: [
 		makeConfig('demo', V10_SYSTEM_PROMPTS.combo, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
 			configVersion: 'albertsons-2026-demo-v1',
-			ui: albertsonsV1Ui('demo', SET_B_SUGGESTED_QUESTIONS.demo, DEMO_APPOINTMENT_CTA, V9_PRIVACY_NOTE, DEMO_MAX_TURNS),
+			ui: albertsonsV1Ui('demo', SET_B_SUGGESTED_QUESTIONS.demo, DEMO_APPOINTMENT_CTA, V9_PRIVACY_NOTE, DEMO_MAX_TURNS, 'clinical-blue-v1'),
 			modelName: 'anthropic/claude-opus-5',
 			reasoning: { effort: 'low', exclude: true },
 			scrubber: SCRUBBER_V2,

@@ -8,4 +8,4 @@
 	<meta name="robots" content="noindex" />
 </svelte:head>
 
-<V2Chat condition="demo" initialThemeId="albertsons-v1" standaloneDemo={true} />
+<V2Chat condition="demo" initialThemeId="clinical-blue-v1" standaloneDemo={true} />

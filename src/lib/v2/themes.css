@@ -42,7 +42,8 @@
 	--vp-card-shadow: rgba(25, 45, 70, 0.05);
 }
 
-.v2-shell[data-vp-theme="albertsons-v1"] {
+.v2-shell[data-vp-theme="albertsons-v1"],
+.v2-shell[data-vp-theme="clinical-blue-v1"] {
 	--vp-font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 	--vp-page-bg: #ffffff;
 	--vp-surface: #ffffff;
