@@ -327,7 +327,8 @@ const armPresentation: Record<
 		]
 	},
 	demo: {
-		opening: `The most common questions patients have about the flu and COVID-19 vaccines are below.\n\n${Q_WHAT_IS_FLU}\n${Q_FLU_SHOT}\n${Q_WHAT_IS_COVID}\n${Q_COVID_SAFE}\n\n**Other questions about the flu and/or COVID-19 vaccine?** Write them out in the space below. Note: the more specific you are here, the better the tool will work!`,
+		// Funder demo (2026-08-18): no FAQ dropdowns; a one-line invitation.
+		opening: 'Questions about the flu and/or COVID-19 vaccine? Ask below. Be as specific or as general as you would like.',
 		suggestedQuestions: []
 	}
 };
