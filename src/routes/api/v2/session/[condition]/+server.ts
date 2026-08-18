@@ -5,7 +5,7 @@ import { MAX_SESSION_REQUEST_BYTES } from '$lib/server/v2/limits';
 import { SessionRequestSchema } from '$lib/server/v2/schemas';
 import {
 	getPublicStudyConfig,
-	getStudyConfig,
+	getStudyConfigForNewSession,
 	getStudyConfigRevision,
 	isStudyCondition
 } from '$lib/server/v2/studyConfig';
@@ -34,7 +34,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 					body.resumeConfig.configVersion,
 					body.resumeConfig.configHash
 				)
-				: getStudyConfig(params.condition);
+				: getStudyConfigForNewSession(params.condition, body.preferredConfigVersion);
 			if (!config) {
 				throw new V2HttpError(
 					409,

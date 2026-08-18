@@ -880,6 +880,35 @@ export function getStudyConfig(condition: StudyCondition): StudyConfig {
 	return ACTIVE_REGISTRY[condition];
 }
 
+// Revisions that partner-facing PREVIEW surveys are bound to. A survey bound
+// to one of these keeps starting NEW sessions on its own revision after later
+// deployments (Albertsons received r8/v9 preview links on 2026-08-1x). Every
+// other historical revision stays resume-only, so a stale Cornell import can
+// never silently go live. Preview revisions predate the redaction screen only
+// if listed here — keep this list to revisions that were themselves shippable.
+// Remove an entry once the corresponding preview links are retired.
+const PREVIEW_PRESERVED_VERSIONS: Readonly<Record<StudyCondition, readonly string[]>> = Object.freeze({
+	flu: Object.freeze(['albertsons-2026-flu-v9']),
+	covid: Object.freeze(['albertsons-2026-covid-v9']),
+	combo: Object.freeze(['albertsons-2026-combo-v9'])
+});
+
+export function getStudyConfigForNewSession(
+	condition: StudyCondition,
+	preferredConfigVersion?: string
+): StudyConfig {
+	if (
+		preferredConfigVersion &&
+		PREVIEW_PRESERVED_VERSIONS[condition].includes(preferredConfigVersion)
+	) {
+		const preserved = CONFIG_REVISIONS[condition].find(
+			(config) => config.configVersion === preferredConfigVersion
+		);
+		if (preserved) return preserved;
+	}
+	return ACTIVE_REGISTRY[condition];
+}
+
 export function getStudyConfigRevision(
 	condition: StudyCondition,
 	configVersion: string,

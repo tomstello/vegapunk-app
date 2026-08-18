@@ -1565,3 +1565,29 @@ test('scrubber fallback is skipped for content-deterministic failures and absent
 		globalThis.fetch = originalFetch;
 	}
 });
+
+test('preview-preserved revisions serve new sessions; all other historical revisions stay resume-only', () => {
+	for (const arm of ['flu', 'covid', 'combo']) {
+		const active = configs.getStudyConfig(arm);
+		// No preference → active.
+		assert.equal(configs.getStudyConfigForNewSession(arm).configVersion, active.configVersion);
+		// Allowlisted preview revision (Albertsons r8/v9 links) → honored.
+		const preserved = configs.getStudyConfigForNewSession(arm, `albertsons-2026-${arm}-v9`);
+		assert.equal(preserved.configVersion, `albertsons-2026-${arm}-v9`);
+		assert.equal(preserved.configHash, V9_CONFIG_HASHES[arm]);
+		// Any other historical revision → NOT honored (survey-side gate must fail visibly).
+		for (const stale of ['v6', 'v7', 'v8']) {
+			assert.equal(
+				configs.getStudyConfigForNewSession(arm, `albertsons-2026-${arm}-${stale}`).configVersion,
+				active.configVersion,
+				`${arm} ${stale} must not be served to new sessions`
+			);
+		}
+		// Unknown/garbage preference → active.
+		assert.equal(configs.getStudyConfigForNewSession(arm, 'albertsons-2026-flu-v999').configVersion, active.configVersion);
+	}
+	// Schema accepts the optional field and still rejects unknown keys.
+	assert.equal(schemas.SessionRequestSchema.safeParse({ v: 2, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID, preferredConfigVersion: 'albertsons-2026-flu-v9' }).success, true);
+	assert.equal(schemas.SessionRequestSchema.safeParse({ v: 2, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID, preferredConfigVersion: '' }).success, false);
+	assert.equal(schemas.SessionRequestSchema.safeParse({ v: 2, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID, bogus: 1 }).success, false);
+});

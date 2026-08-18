@@ -183,6 +183,29 @@ test('session UI accepts only closed themes and retained v1 resumes remain parse
 			(error) => error.code === 'session_invalid_schema' && error.retryable === false
 		);
 
+		// Preview-preserved survey: client sends its bound version and accepts
+		// a matching reply; a mismatching reply is rejected.
+		let lastBody = null;
+		globalThis.fetch = async (_url, init) => {
+			lastBody = JSON.parse(init.body);
+			return new Response(JSON.stringify({ ...response, configVersion: 'albertsons-2026-flu-v9', ui: { themeId: 'albertsons-v1', headerTitle: 'Flu vaccine information' } }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			});
+		};
+		const preserved = await api.createPublicSession('flu', sessionKey, attemptNonce, undefined, undefined, 'albertsons-2026-flu-v9');
+		assert.equal(preserved.configVersion, 'albertsons-2026-flu-v9');
+		assert.equal(lastBody.preferredConfigVersion, 'albertsons-2026-flu-v9');
+		assert.equal('resumeConfig' in lastBody, false);
+		await assert.rejects(
+			api.createPublicSession('flu', sessionKey, attemptNonce, undefined, undefined, 'albertsons-2026-flu-v8'),
+			(error) => error.code === 'session_invalid_schema'
+		);
+		globalThis.fetch = async () => new Response(JSON.stringify(response), {
+			status: 200,
+			headers: { 'content-type': 'application/json' }
+		});
+
 		response.configVersion = 'albertsons-2026-flu-v1';
 		response.ui = { headerTitle: 'Vaccine Questions' };
 		const retained = await api.createPublicSession(

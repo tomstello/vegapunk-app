@@ -211,6 +211,7 @@ export async function createPublicSession(
 	attemptNonce: string,
 	signal?: AbortSignal,
 	resumeConfig?: { configVersion: string; configHash: string },
+	preferredConfigVersion?: string,
 ): Promise<SessionResponse> {
 	let response: Response;
 	try {
@@ -222,6 +223,7 @@ export async function createPublicSession(
 				chatSessionKey,
 				attemptNonce,
 				...(resumeConfig ? { resumeConfig } : {}),
+				...(preferredConfigVersion ? { preferredConfigVersion } : {}),
 			}),
 			signal,
 		});
@@ -261,7 +263,7 @@ export async function createPublicSession(
 		parsed,
 		condition,
 		chatSessionKey,
-		resumeConfig?.configVersion ?? CONFIG_VERSIONS[condition],
+		resumeConfig?.configVersion ?? preferredConfigVersion ?? CONFIG_VERSIONS[condition],
 	);
 	if (!session) {
 		throw new ParticipantSafeError(

@@ -335,12 +335,17 @@
 			let session: SessionResponse;
 			const resumeConfiguration = savedConfigurationForResume(init);
 			try {
+				// The survey names the revision it was built for. The server honors
+				// it for new sessions only when that revision is preview-preserved;
+				// otherwise it serves the active revision and the check below fails
+				// visibly (a stale survey must never silently pair with a newer app).
 				session = await createPublicSession(
 					condition,
 					init.sessionKey,
 					init.attemptNonce,
 					sessionAbort.signal,
 					resumeConfiguration,
+					init.expectedConfigVersion,
 				);
 			} finally {
 				window.clearTimeout(sessionTimer);
