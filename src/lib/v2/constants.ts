@@ -17,9 +17,9 @@ export const LOCAL_STREAM_PERSIST_MS = 500;
 export const PARENT_HANDSHAKE_TIMEOUT_MS = 12_000;
 
 export const CONFIG_VERSIONS: Record<StudyCondition, string> = {
-	flu: "albertsons-2026-flu-v9",
-	covid: "albertsons-2026-covid-v9",
-	combo: "albertsons-2026-combo-v9",
+	flu: "albertsons-2026-flu-v10",
+	covid: "albertsons-2026-covid-v10",
+	combo: "albertsons-2026-combo-v10",
 };
 
 export const DEFAULT_UI: PublicUiConfig = {

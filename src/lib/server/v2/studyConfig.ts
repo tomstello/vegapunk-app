@@ -1,4 +1,5 @@
 import { deterministicUuid, sha256Hex } from './crypto';
+import { V10_SYSTEM_PROMPTS } from './prompts';
 import { V2_RUNTIME_POLICY } from './limits';
 import type { StudyCondition } from './tokens';
 import type { PartnerThemeId } from '../../v2/types';
@@ -722,6 +723,15 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
 				scrubber: SCRUBBER_V2
+			}),
+			// v10: per-arm prompts (shared trunk + arm-specific facts/scope);
+			// team-revised Aug 17 2026 fact text with 2026-27 links.
+			makeConfig('flu', V10_SYSTEM_PROMPTS.flu, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-flu-v10',
+				ui: albertsonsV1Ui('flu', SET_B_SUGGESTED_QUESTIONS.flu, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				scrubber: SCRUBBER_V2
 			})
 	],
 	covid: [
@@ -778,6 +788,15 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
 				scrubber: SCRUBBER_V2
+			}),
+			// v10: per-arm prompts (shared trunk + arm-specific facts/scope);
+			// team-revised Aug 17 2026 fact text with 2026-27 links.
+			makeConfig('covid', V10_SYSTEM_PROMPTS.covid, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-covid-v10',
+				ui: albertsonsV1Ui('covid', SET_B_SUGGESTED_QUESTIONS.covid, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				scrubber: SCRUBBER_V2
 			})
 	],
 	combo: [
@@ -830,6 +849,15 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 			}),
 			makeConfig('combo', V8_SHARED_SYSTEM_PROMPT, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
 				configVersion: 'albertsons-2026-combo-v9',
+				ui: albertsonsV1Ui('combo', SET_B_SUGGESTED_QUESTIONS.combo, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				scrubber: SCRUBBER_V2
+			}),
+			// v10: per-arm prompts (shared trunk + arm-specific facts/scope);
+			// team-revised Aug 17 2026 fact text with 2026-27 links.
+			makeConfig('combo', V10_SYSTEM_PROMPTS.combo, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-combo-v10',
 				ui: albertsonsV1Ui('combo', SET_B_SUGGESTED_QUESTIONS.combo, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },

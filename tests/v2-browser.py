@@ -67,7 +67,7 @@ async def install_api_routes(
             "sessionToken": TOKEN,
             "sessionKey": request["chatSessionKey"],
             "condition": condition,
-            "configVersion": requested.get("configVersion", f"albertsons-2026-{condition}-v9"),
+            "configVersion": requested.get("configVersion", f"albertsons-2026-{condition}-v10"),
             "configHash": selected_hash,
             "initialMessages": [
                 {
@@ -350,7 +350,7 @@ async def test_parent_persist_is_nonterminal_and_reason_survives_reload(browser)
           if (data.type === 'vegapunk:hello') {{
             const init = {{v:2,type:'qualtrics:init',condition:'flu',helloNonce:data.helloNonce,
               nonce:'{protocol_nonce}',sessionKey:'{session_key}',attemptNonce:'{attempt_nonce}',
-              expectedConfigVersion:'albertsons-2026-flu-v9',parentOrigin:location.origin,sequence:0}};
+              expectedConfigVersion:'albertsons-2026-flu-v10',parentOrigin:location.origin,sequence:0}};
             if (window.lastTerminalReason) init.terminalReason = window.lastTerminalReason;
             event.source.postMessage(init, location.origin);
           }}
@@ -690,7 +690,7 @@ async def test_prompt_hotfix_preserves_inflight_session(browser):
     await page.reload(wait_until="networkidle")
     await page.get_by_test_id("question-input").wait_for()
     assert sessions[-1]["resumeConfig"] == {
-        "configVersion": "albertsons-2026-flu-v9",
+        "configVersion": "albertsons-2026-flu-v10",
         "configHash": old_hash,
     }
     assert await page.get_by_text("Question before prompt hotfix", exact=True).count() == 1

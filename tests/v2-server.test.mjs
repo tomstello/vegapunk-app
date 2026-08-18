@@ -95,6 +95,11 @@ const V9_CONFIG_HASHES = Object.freeze({
 	covid: '40a1b7772f12fce08568715a8d35c028e94cec69b469983c33d689a16a3d4da6',
 	combo: 'a2d8e44c87100bfbc3c7a9ff8fe1d5c8479bdd4829ae86a71166efbd2c096c82'
 });
+const V10_CONFIG_HASHES = Object.freeze({
+	flu: 'ef6f12aa7946c2cc9d6979d9554ce769ffeec84c435e8014617c9c44af005340',
+	covid: 'c691c84e4886cd8b6c47bfd1385fe264e4e7e1130623b85556487538a7cc3fad',
+	combo: 'df7244c5a1b6f7382db2302feb38aeede674496ef01819bd901abdc8fa3ef6af'
+});
 const V7_CONFIG_HASHES = Object.freeze({
 	flu: '0da70cec1ff637fa73b9108b678c6a18503e56abeb57f5d04cf0a184c76e9bda',
 	covid: '5444d5f3d12a91384ba427d3e84baf0c5361c631dd09d0eb713a17f373a5c5b7',
@@ -269,8 +274,8 @@ test('fixed registry exposes public UI but not the prompt or provider configurat
 		const config = configs.getStudyConfig(arm);
 		const publicConfig = configs.getPublicStudyConfig(config);
 		assert.equal(config.condition, arm);
-		assert.equal(config.configVersion, `albertsons-2026-${arm}-v9`);
-		assert.equal(config.configHash, V9_CONFIG_HASHES[arm]);
+		assert.equal(config.configVersion, `albertsons-2026-${arm}-v10`);
+		assert.equal(config.configHash, V10_CONFIG_HASHES[arm]);
 		assert.deepEqual(publicConfig.ui.appointmentCta, {
 			label: 'Schedule now',
 			url: 'https://www.albertsons.com/health/appointments/home'
@@ -302,45 +307,48 @@ test('fixed registry exposes public UI but not the prompt or provider configurat
 	);
 });
 
-test('all arms share one prompt: v5 intervention text plus exactly the scrub addendum', () => {
-	const prompts = ['flu', 'covid', 'combo'].map(
-		(arm) => configs.getStudyConfig(arm).systemPrompt
-	);
-	assert.equal(new Set(prompts).size, 1, 'fixed survey routes must not silently tailor the prompt');
-	const normalize = (text) =>
-		text
-			.split('\n')
-			.map((line) => line.trimEnd())
-			.join('\n');
-	const normalized = normalize(prompts[0]);
-	assert.equal(
-		createHash('sha256').update(normalized, 'utf8').digest('hex'),
-		'230a293457202fe0eb61d81c06397dc902c1325b60e61e58ec0ac30a0df79931'
-	);
-	assert.equal(normalized.includes('# INSTRUCTION AND SAFETY BOUNDARY'), false);
-
-	// The active prompt must be the retained v6 prompt (whose normalized text
-	// is the approved v5 intervention, sha dbac1718...) plus exactly the two
-	// v8 addenda (privacy handling, scheduling) — nothing else edited.
+test('v10 prompts: shared trunk, arm-specific facts and scope', () => {
+	const prompts = Object.fromEntries(['flu', 'covid', 'combo'].map((arm) => [arm, configs.getStudyConfig(arm).systemPrompt]));
+	assert.equal(new Set(Object.values(prompts)).size, 3, 'each arm now has its own prompt');
+	const section = (text, heading, nextHeadings) => {
+		const start = text.indexOf(heading);
+		assert.ok(start >= 0, );
+		const ends = nextHeadings.map((h) => text.indexOf(h, start + 1)).filter((i) => i > start);
+		return text.slice(start, ends.length ? Math.min(...ends) : undefined);
+	};
+	// Trunk sections identical across arms except for the two documented
+	// vaccine-name substitutions in the mission paragraph and rule 6.
 	for (const arm of ['flu', 'covid', 'combo']) {
-		const v6 = configs.getStudyConfigRevision(
-			arm,
-			`albertsons-2026-${arm}-v6`,
-			V6_CONFIG_HASHES[arm]
-		);
-		assert.ok(v6, `${arm} v6 revision must remain retained`);
-		assert.equal(
-			createHash('sha256').update(normalize(v6.systemPrompt), 'utf8').digest('hex'),
-			'dbac171816c6004507b67a199cb5a2c53b6486798b6961ac1c259e63b95ea626'
-		);
-		const active = configs.getStudyConfig(arm).systemPrompt;
-		assert.ok(active.startsWith(v6.systemPrompt), 'v8 prompt must extend, not edit, the intervention body');
-		const addenda = active.slice(v6.systemPrompt.length);
-		assert.match(addenda, /^\n\n# PRIVACY REDACTION HANDLING\n[\s\S]*\n\n# SCHEDULING APPOINTMENTS\n/);
-		assert.equal(addenda.includes('never repeat placeholders back'), true);
-		assert.equal(addenda.includes('https://www.albertsons.com/health/appointments/home'), true);
-		assert.equal(addenda.includes('Do not attempt to book anything yourself'), true);
+		const p = prompts[arm];
+		assert.equal(section(p, '# PRIVACY REDACTION HANDLING', ['# SCHEDULING APPOINTMENTS']), section(prompts.combo, '# PRIVACY REDACTION HANDLING', ['# SCHEDULING APPOINTMENTS']));
+		assert.equal(section(p, '# SCHEDULING APPOINTMENTS', []), section(prompts.combo, '# SCHEDULING APPOINTMENTS', []));
+		const rules = section(p, '# CORE RULES ABOUT FUNCTIONALITY', ['# SCOPE', '# PRIVACY REDACTION HANDLING']);
+		assert.equal(rules.split('\n').length, section(prompts.combo, '# CORE RULES ABOUT FUNCTIONALITY', ['# PRIVACY REDACTION HANDLING']).split('\n').length, );
 	}
+	// Facts are arm-specific.
+	const facts = (arm) => section(prompts[arm], '# KEY FACTS TO DRAW ON', ['# CORE RULES ABOUT FUNCTIONALITY']);
+	const heads = (arm) => facts(arm).split('\n').filter((l) => l.startsWith('## '));
+	assert.equal(heads('flu').filter((h) => /covid/i.test(h)).length, 0, 'flu arm carries no COVID facts');
+	assert.equal(heads('covid').filter((h) => /flu/i.test(h)).length, 0, 'COVID arm carries no flu facts');
+	assert.equal(heads('combo').length, heads('flu').length + heads('covid').length, 'combined carries both sets');
+	assert.deepEqual(heads('combo'), [...heads('covid'), ...heads('flu')]);
+	// Mission wording names the arm's vaccine(s); single arms carry SCOPE.
+	assert.match(prompts.flu, /^Your task is to be a knowledgeable and neutral source of accurate, factual information about the seasonal 2026\/2027 influenza \(flu\) vaccine\./);
+	assert.match(prompts.covid, /^Your task is to be a knowledgeable and neutral source of accurate, factual information about the 2026\/2027 COVID-19 vaccine\./);
+	assert.match(prompts.combo, /^Your task is to be a knowledgeable and neutral source of accurate, factual information about the seasonal 2026\/2027 influenza and COVID-19 vaccines\./);
+	assert.ok(prompts.flu.includes('# SCOPE') && prompts.covid.includes('# SCOPE') && !prompts.combo.includes('# SCOPE'));
+	// Cleanliness: no Outlook safelinks or export escaping survived.
+	for (const p of Object.values(prompts)) {
+		assert.equal(p.includes('safelinks'), false);
+		assert.equal(/\\[#\-*\[\]]/.test(p), false);
+	}
+	// The team's 2026-27 season link is present wherever flu facts are.
+	assert.ok(prompts.flu.includes('https://www.cdc.gov/flu/season/2026-2027.html'));
+	assert.ok(prompts.combo.includes('https://www.cdc.gov/flu/season/2026-2027.html'));
+	assert.equal(prompts.covid.includes('/flu/season/'), false, 'COVID arm carries no flu links');
+	// The retained v9 prompt is still the shared v5+addenda text.
+	const v9 = configs.getStudyConfigRevision('flu', 'albertsons-2026-flu-v9', V9_CONFIG_HASHES.flu);
+	assert.ok(v9.systemPrompt.startsWith('"Your task is to be'), 'v9 retained verbatim');
 });
 
 test('configuration hash covers runtime limits, retries, and deadlines', () => {
@@ -412,8 +420,8 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 			allow_fallbacks: true,
 			require_parameters: true
 		});
-		assert.equal(active.configVersion, `albertsons-2026-${arm}-v9`);
-		assert.equal(active.configHash, V9_CONFIG_HASHES[arm]);
+		assert.equal(active.configVersion, `albertsons-2026-${arm}-v10`);
+		assert.equal(active.configHash, V10_CONFIG_HASHES[arm]);
 		assert.equal(active.model.name, 'anthropic/claude-opus-5');
 		assert.deepEqual(active.model.reasoning, { effort: 'low', exclude: true });
 		assert.equal(active.runtimePolicy.providerMaxAttempts, 1);
@@ -435,6 +443,14 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 			['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB', 'CITY']
 		);
 		assert.equal(active.scrubber.prompt.includes('- CITY: city, town, county'), true);
+
+		const previousV9 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v9`,
+			V9_CONFIG_HASHES[arm]
+		);
+		assert.ok(previousV9, `${arm} prior v9 revision must remain resumable`);
+		assert.equal(previousV9.ui.appointmentCta.label, 'Schedule now');
 
 		const previousV8 = configs.getStudyConfigRevision(
 			arm,

@@ -143,7 +143,7 @@ test('session UI accepts only closed themes and retained v1 resumes remain parse
 		sessionToken: 'signed-session-token-for-theme-test-1234567890',
 		sessionKey,
 		condition: 'flu',
-		configVersion: 'albertsons-2026-flu-v9',
+		configVersion: 'albertsons-2026-flu-v10',
 		configHash: 'a'.repeat(64),
 		initialMessages: [],
 		ui: {
