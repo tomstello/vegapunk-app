@@ -824,7 +824,7 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 	],
 	demo: [
 		makeConfig('demo', V10_SYSTEM_PROMPTS.combo, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
-			configVersion: 'albertsons-2026-demo-v1',
+			configVersion: 'vaccine-chat-demo-v1',
 			ui: albertsonsV1Ui('demo', SET_B_SUGGESTED_QUESTIONS.demo, DEMO_APPOINTMENT_CTA, V9_PRIVACY_NOTE, DEMO_MAX_TURNS, 'clinical-blue-v1'),
 			modelName: 'anthropic/claude-opus-5',
 			reasoning: { effort: 'low', exclude: true },

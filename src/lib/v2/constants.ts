@@ -20,7 +20,7 @@ export const CONFIG_VERSIONS: Record<StudyCondition, string> = {
 	flu: "albertsons-2026-flu-v10",
 	covid: "albertsons-2026-covid-v10",
 	combo: "albertsons-2026-combo-v10",
-	demo: "albertsons-2026-demo-v1",
+	demo: "vaccine-chat-demo-v1",
 };
 
 export const DEFAULT_UI: PublicUiConfig = {
