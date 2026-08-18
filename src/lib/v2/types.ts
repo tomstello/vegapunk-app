@@ -1,4 +1,4 @@
-export const CONDITIONS = ["flu", "covid", "combo"] as const;
+export const CONDITIONS = ["flu", "covid", "combo", "demo"] as const;
 
 export const PARTNER_THEME_IDS = ["neutral-v1", "albertsons-v1"] as const;
 
@@ -141,6 +141,8 @@ export interface SessionResponse {
 	}>;
 	ui: Partial<PublicUiConfig>;
 	historyTag: string;
+	// Standalone demo configuration (funder preview); absent for study arms.
+	demo?: { maxTurns: number; standalone: true };
 }
 
 export interface ParentInitMessage {

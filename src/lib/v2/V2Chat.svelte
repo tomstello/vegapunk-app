@@ -66,6 +66,10 @@
 
 	export let condition: StudyCondition;
 	export let initialThemeId: PartnerThemeId = "neutral-v1";
+	// Standalone public demo route: runs top-level with a locally minted
+	// session (no Qualtrics parent), never checkpoints. The server also marks
+	// the config as demo and enforces the lower turn cap; both must agree.
+	export let standaloneDemo = false;
 
 	type InitStatus = "connecting" | "ready" | "failed";
 	const UUID_PATTERN =
@@ -161,17 +165,18 @@
 	$: retryLimitReached =
 		retryAttemptCount >= MAX_ASSISTANT_ATTEMPTS_PER_TURN ||
 		(state?.messages.length ?? 0) >= MAX_SNAPSHOT_MESSAGES;
+	let effectiveMaxTurns = MAX_TURNS;
 	$: canAsk =
 		initStatus === "ready" &&
 		state?.lifecycle === "ready" &&
 		!continuationBlocked &&
-		userTurnCount < MAX_TURNS;
+		userTurnCount < effectiveMaxTurns;
 	$: showSuggestions =
 		canAsk && userTurnCount === 0 && ui.suggestedQuestions.length > 0;
 	$: showQuestionLimit =
 		Boolean(capacityError) ||
 		inputCodePoints >= CHARACTER_LIMIT_WARNING_AT ||
-		userTurnCount >= TURN_LIMIT_WARNING_AT;
+		userTurnCount >= Math.max(1, effectiveMaxTurns - 5);
 
 	onMount(() => {
 		void initialize();
@@ -319,7 +324,7 @@
 			if (isFramed()) {
 				bridge = new ParentBridge(condition);
 				init = await bridge.connect();
-			} else if (import.meta.env.DEV) {
+			} else if (import.meta.env.DEV || standaloneDemo) {
 				init = createDevelopmentInit();
 			} else {
 				throw new ParticipantSafeError(
@@ -370,7 +375,9 @@
 
 			sessionToken = session.sessionToken;
 			sessionTokenAt = Date.now();
-			ui = { ...DEFAULT_UI, ...session.ui, maxUserMessages: MAX_TURNS };
+			effectiveMaxTurns = session.demo?.maxTurns ?? MAX_TURNS;
+			if (session.demo) checkpointEnabled = false;
+			ui = { ...DEFAULT_UI, ...session.ui, maxUserMessages: effectiveMaxTurns };
 			const restored = restoreState(init, session);
 			state = restoreInterruptedTurn(restored);
 			draftInput = state.draft;
@@ -1035,7 +1042,7 @@
 			state.chatEndISO ||
 			activeRequest ||
 			continuationBlocked ||
-			userTurnCount >= MAX_TURNS
+			userTurnCount >= effectiveMaxTurns
 		) return;
 		const content = (contentOverride ?? draftInput).trim();
 		if (!content) return;
@@ -1661,9 +1668,9 @@
 					</section>
 				{/if}
 
-				{#if userTurnCount >= MAX_TURNS && state.lifecycle === "ready"}
+				{#if userTurnCount >= effectiveMaxTurns && state.lifecycle === "ready"}
 					<section class="completion-card">
-						<h2>You’ve reached the {MAX_TURNS}-question limit</h2>
+						<h2>You’ve reached the {effectiveMaxTurns}-question limit</h2>
 						<p>Finish the chat to save the conversation and continue.</p>
 						<button class="primary-button" type="button" on:click={() => endChat("hard_cap")}>Finish and continue</button>
 					</section>
@@ -1699,7 +1706,7 @@
 							<button class="send-button" data-testid="send-question" type="submit" disabled={!canAsk || !draftInput.trim() || inputCodePoints > MAX_USER_CODE_POINTS}>Send<span class="sr-only"> question</span></button>
 						</div>
 						{#if showQuestionLimit}
-							<p id="question-limit" data-testid="question-limit" role="status" aria-live="polite">{inputCodePoints.toLocaleString()} / {MAX_USER_CODE_POINTS.toLocaleString()} characters · {userTurnCount} / {MAX_TURNS} questions</p>
+							<p id="question-limit" data-testid="question-limit" role="status" aria-live="polite">{inputCodePoints.toLocaleString()} / {MAX_USER_CODE_POINTS.toLocaleString()} characters · {userTurnCount} / {effectiveMaxTurns} questions</p>
 						{/if}
 					</form>
 					{#if ui.privacyNote}

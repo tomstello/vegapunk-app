@@ -17,7 +17,8 @@ import { openRouterSessionId } from '$lib/server/v2/crypto';
 import { OpenRouterStartError, startOpenRouterStream } from '$lib/server/v2/openrouter';
 import { ScrubberError, scrubUserMessage } from '$lib/server/v2/scrubber';
 import { ChatRequestSchema } from '$lib/server/v2/schemas';
-import { getStudyConfigRevision } from '$lib/server/v2/studyConfig';
+import { effectiveMaxTurns, getStudyConfigRevision } from '$lib/server/v2/studyConfig';
+import { recordDemoTranscript } from '$lib/server/v2/demoStore';
 import {
 	issueHistoryTag,
 	signingKey,
@@ -72,6 +73,11 @@ export const POST: RequestHandler = async ({ request }) => {
 		const idempotencyKey = request.headers.get('idempotency-key') ?? '';
 		if (idempotencyKey !== body.turn.id) {
 			throw new V2HttpError(400, 'invalid_idempotency_key', 'Idempotency-Key must equal the turn ID');
+		}
+		// Per-configuration turn cap (the demo runs shorter than the study's
+		// schema-level maximum). sequence is the 1-based index of this user turn.
+		if (body.sequence > effectiveMaxTurns(config)) {
+			throw new V2HttpError(409, 'turn_limit_reached', 'This chat has reached its question limit.');
 		}
 		try {
 			verifyHistoryTag({
@@ -279,6 +285,7 @@ export const POST: RequestHandler = async ({ request }) => {
 									{ id: body.turn.id, role: 'user', content: canonicalUserMessage },
 									{ id: assistantMessageId, role: 'assistant', content: assistantText }
 								];
+								if (config.demo) void recordDemoTranscript(session, config, completedHistory);
 								controller.enqueue(
 									sse('done', {
 										v: 2,
@@ -339,6 +346,7 @@ export const POST: RequestHandler = async ({ request }) => {
 								{ id: body.turn.id, role: 'user', content: canonicalUserMessage },
 								{ id: assistantMessageId, role: 'assistant', content: assistantText }
 							];
+							if (config.demo) void recordDemoTranscript(session, config, completedHistory);
 							controller.enqueue(
 								sse('done', {
 									v: 2,

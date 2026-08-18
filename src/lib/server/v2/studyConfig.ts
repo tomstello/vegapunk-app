@@ -1,6 +1,6 @@
 import { deterministicUuid, sha256Hex } from './crypto';
 import { V10_SYSTEM_PROMPTS } from './prompts';
-import { V2_RUNTIME_POLICY } from './limits';
+import { MAX_TURNS, V2_RUNTIME_POLICY } from './limits';
 import type { StudyCondition } from './tokens';
 import type { PartnerThemeId } from '../../v2/types';
 
@@ -103,6 +103,10 @@ export type StudyConfig = {
 	// incoming user turn before the provider relay, the signed history, and
 	// the client-persisted transcript.
 	scrubber?: ScrubberConfig;
+	// Standalone public demo (funder preview). When set: the client may run
+	// top-level (no Qualtrics parent), never checkpoints, applies the lower
+	// turn cap, and the server records transcripts to blob storage instead.
+	demo?: { maxTurns: number; standalone: true };
 };
 
 export function hashStudyConfigMaterial(material: Omit<StudyConfig, 'configHash'>): string {
@@ -321,6 +325,10 @@ const armPresentation: Record<
 			'Is the flu shot safe for people over 65?',
 			'What are common side effects?'
 		]
+	},
+	demo: {
+		opening: `The most common questions patients have about the flu and COVID-19 vaccines are below.\n\n${Q_WHAT_IS_FLU}\n${Q_FLU_SHOT}\n${Q_WHAT_IS_COVID}\n${Q_COVID_SAFE}\n\n**Other questions about the flu and/or COVID-19 vaccine?** Write them out in the space below. Note: the more specific you are here, the better the tool will work!`,
+		suggestedQuestions: []
 	}
 };
 
@@ -329,6 +337,7 @@ const armPresentation: Record<
 // The shared side-effects question occupies the same first position in each
 // arm; the second question is the arm-specific signature item.
 const SET_B_SUGGESTED_QUESTIONS: Record<StudyCondition, readonly string[]> = Object.freeze({
+	demo: Object.freeze([]),
 	flu: Object.freeze([
 		'What are the side effects of the flu shot?',
 		'Do I really need a flu shot every year?'
@@ -344,10 +353,20 @@ const SET_B_SUGGESTED_QUESTIONS: Record<StudyCondition, readonly string[]> = Obj
 });
 
 const V2_HEADER_TITLES: Record<StudyCondition, string> = Object.freeze({
+	demo: 'Flu & COVID-19 vaccine information',
 	flu: 'Flu vaccine information',
 	covid: 'COVID-19 vaccine information',
 	combo: 'Flu & COVID-19 vaccine information'
 });
+
+// Funder-facing standalone demo of the combined bot (2026-08-18). No starter
+// chips; the scheduling strip points at the HHS cross-pharmacy finder rather
+// than the partner scheduler. Uses the combined arm's opening message.
+const DEMO_APPOINTMENT_CTA = Object.freeze({
+	label: 'Find a vaccine near you',
+	url: 'https://www.vaccines.gov/'
+});
+const DEMO_MAX_TURNS = 10;
 
 function legacyV1Ui(condition: StudyCondition): PublicStudyUi {
 	const presentation = armPresentation[condition];
@@ -369,7 +388,8 @@ function albertsonsV1Ui(
 	suggestedQuestions: readonly string[] = armPresentation[condition].suggestedQuestions,
 	appointmentCta?: { label: string; url: string },
 	// Default reproduces v2-v8 hashes byte-for-byte; v9+ passes revised copy.
-	privacyNote: string = 'For your privacy, don\u2019t share identifying details such as your name or address. This AI tool can make mistakes and provides general information; ask a doctor or pharmacist about personal health concerns.'
+	privacyNote: string = 'For your privacy, don\u2019t share identifying details such as your name or address. This AI tool can make mistakes and provides general information; ask a doctor or pharmacist about personal health concerns.',
+	maxUserMessages = 35
 ): PublicStudyUi {
 	return {
 		themeId: 'albertsons-v1',
@@ -379,7 +399,7 @@ function albertsonsV1Ui(
 		endChatText: 'End chat',
 		privacyNote,
 		suggestedQuestions: [...suggestedQuestions],
-		maxUserMessages: 35,
+		maxUserMessages,
 		...(appointmentCta ? { appointmentCta } : {})
 	};
 }
@@ -598,6 +618,7 @@ function makeConfig(
 		modelName?: StudyConfig['model']['name'];
 		reasoning?: StudyConfig['model']['reasoning'];
 		scrubber?: ScrubberConfig;
+		demo?: StudyConfig['demo'];
 	}
 ): StudyConfig {
 	const configVersion = options?.configVersion ?? `albertsons-2026-${condition}-v1`;
@@ -629,7 +650,8 @@ function makeConfig(
 		model,
 		// Conditional spread, exactly like `reasoning` above: absent for v1-v6
 		// so every previously issued hash reproduces byte-for-byte.
-		...(options?.scrubber ? { scrubber: options.scrubber } : {})
+		...(options?.scrubber ? { scrubber: options.scrubber } : {}),
+		...(options?.demo ? { demo: options.demo } : {})
 	};
 	const config: StudyConfig = {
 		...material,
@@ -799,6 +821,16 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 				scrubber: SCRUBBER_V2
 			})
 	],
+	demo: [
+		makeConfig('demo', V10_SYSTEM_PROMPTS.combo, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+			configVersion: 'albertsons-2026-demo-v1',
+			ui: albertsonsV1Ui('demo', SET_B_SUGGESTED_QUESTIONS.demo, DEMO_APPOINTMENT_CTA, V9_PRIVACY_NOTE, DEMO_MAX_TURNS),
+			modelName: 'anthropic/claude-opus-5',
+			reasoning: { effort: 'low', exclude: true },
+			scrubber: SCRUBBER_V2,
+			demo: { maxTurns: DEMO_MAX_TURNS, standalone: true }
+		})
+	],
 	combo: [
 		makeConfig('combo', V5_SHARED_SYSTEM_PROMPT, LEGACY_PROVIDER_POLICY, PRE_280K_RUNTIME_POLICY),
 		makeConfig('combo', V5_SHARED_SYSTEM_PROMPT, STRICT_PROVIDER_POLICY, PRE_280K_RUNTIME_POLICY),
@@ -869,11 +901,12 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 const ACTIVE_REGISTRY: Record<StudyCondition, StudyConfig> = {
 	flu: CONFIG_REVISIONS.flu.at(-1) as StudyConfig,
 	covid: CONFIG_REVISIONS.covid.at(-1) as StudyConfig,
-	combo: CONFIG_REVISIONS.combo.at(-1) as StudyConfig
+	combo: CONFIG_REVISIONS.combo.at(-1) as StudyConfig,
+	demo: CONFIG_REVISIONS.demo.at(-1) as StudyConfig
 };
 
 export function isStudyCondition(value: string): value is StudyCondition {
-	return value === 'flu' || value === 'covid' || value === 'combo';
+	return value === 'flu' || value === 'covid' || value === 'combo' || value === 'demo';
 }
 
 export function getStudyConfig(condition: StudyCondition): StudyConfig {
@@ -888,6 +921,7 @@ export function getStudyConfig(condition: StudyCondition): StudyConfig {
 // if listed here — keep this list to revisions that were themselves shippable.
 // Remove an entry once the corresponding preview links are retired.
 const PREVIEW_PRESERVED_VERSIONS: Readonly<Record<StudyCondition, readonly string[]>> = Object.freeze({
+	demo: Object.freeze([]),
 	flu: Object.freeze(['albertsons-2026-flu-v9']),
 	covid: Object.freeze(['albertsons-2026-covid-v9']),
 	combo: Object.freeze(['albertsons-2026-combo-v9'])
@@ -925,12 +959,19 @@ export function getPublicStudyConfig(config: StudyConfig): {
 	configHash: string;
 	initialMessages: PublicInitialMessage[];
 	ui: PublicStudyUi;
+	demo?: { maxTurns: number; standalone: true };
 } {
 	return {
 		condition: config.condition,
 		configVersion: config.configVersion,
 		configHash: config.configHash,
 		initialMessages: structuredClone(config.initialMessages),
-		ui: structuredClone(config.ui)
+		ui: structuredClone(config.ui),
+		...(config.demo ? { demo: { ...config.demo } } : {})
 	};
+}
+
+/** Effective user-turn cap for a configuration (demo lowers it). */
+export function effectiveMaxTurns(config: StudyConfig): number {
+	return config.demo?.maxTurns ?? MAX_TURNS;
 }

@@ -15,7 +15,7 @@ import {
 	V2_PROTOCOL_VERSION
 } from './limits';
 
-export const CONDITIONS = ['flu', 'covid', 'combo'] as const;
+export const CONDITIONS = ['flu', 'covid', 'combo', 'demo'] as const;
 export type StudyCondition = (typeof CONDITIONS)[number];
 
 export type HistoryMessage = {

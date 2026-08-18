@@ -113,7 +113,14 @@ function cleanUi(value: unknown): SessionResponse["ui"] | null {
 		ui.endChatText = value.endChatText;
 	}
 	if (value.maxUserMessages !== undefined) {
-		if (value.maxUserMessages !== 35) return null;
+		// 35 for study arms; the standalone demo config declares a lower cap.
+		if (
+			typeof value.maxUserMessages !== "number" ||
+			!Number.isInteger(value.maxUserMessages) ||
+			value.maxUserMessages < 1 ||
+			value.maxUserMessages > 35
+		)
+			return null;
 		ui.maxUserMessages = value.maxUserMessages;
 	}
 	if (value.appointmentCta !== undefined) {
@@ -127,7 +134,7 @@ function cleanUi(value: unknown): SessionResponse["ui"] | null {
 			cta.label.length > 100 ||
 			typeof cta.url !== "string" ||
 			cta.url.length > 300 ||
-			!cta.url.startsWith("https://www.albertsons.com/")
+			!(cta.url.startsWith("https://www.albertsons.com/") || cta.url.startsWith("https://www.vaccines.gov/"))
 		)
 			return null;
 		ui.appointmentCta = { label: cta.label, url: cta.url };
@@ -192,6 +199,19 @@ function parseSessionResponse(
 	}
 	const ui = cleanUi(value.ui);
 	if (ui === null) return null;
+	let demo: SessionResponse["demo"];
+	if (value.demo !== undefined) {
+		if (
+			!isRecord(value.demo) ||
+			value.demo.standalone !== true ||
+			typeof value.demo.maxTurns !== "number" ||
+			!Number.isInteger(value.demo.maxTurns) ||
+			value.demo.maxTurns < 1 ||
+			value.demo.maxTurns > 35
+		)
+			return null;
+		demo = { maxTurns: value.demo.maxTurns, standalone: true };
+	}
 	return {
 		v: 2,
 		sessionToken: value.sessionToken,
@@ -202,6 +222,7 @@ function parseSessionResponse(
 		initialMessages,
 		ui,
 		historyTag: value.historyTag,
+		...(demo ? { demo } : {}),
 	};
 }
 
