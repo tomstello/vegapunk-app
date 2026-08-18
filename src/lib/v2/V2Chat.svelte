@@ -1714,9 +1714,9 @@
 	:global(html), :global(body) { margin: 0; min-height: 100%; background: #f7fafc; }
 	:global(body) { color: #172033; }
 	:global(*) { box-sizing: border-box; }
-	.schedule-strip { align-items: center; background: #F2F7FC; border-bottom: 1px solid var(--vp-border); display: flex; flex: none; gap: .75rem; justify-content: space-between; padding: .55rem 1rem; }
-	.schedule-strip p { color: #33414F; font-size: .84rem; margin: 0; }
-	.schedule-strip a { background: var(--vp-primary-bg); border: 1px solid var(--vp-primary-bg); border-radius: .5rem; color: var(--vp-primary-text); display: inline-block; flex: none; font-size: .8rem; font-weight: 600; line-height: 1.2; padding: .5rem .8rem; text-align: center; text-decoration: none; white-space: nowrap; }
+	.schedule-strip { align-items: center; background: #F2F7FC; border-bottom: 1px solid var(--vp-border); display: flex; flex: none; flex-wrap: wrap; gap: .5rem .75rem; justify-content: space-between; min-width: 0; padding: .55rem 1rem; }
+	.schedule-strip p { color: #33414F; flex: 1 1 12rem; font-size: .84rem; margin: 0; min-width: 0; }
+	.schedule-strip a { background: var(--vp-primary-bg); border: 1px solid var(--vp-primary-bg); border-radius: .5rem; color: var(--vp-primary-text); display: inline-block; flex: none; font-size: .8rem; font-weight: 600; line-height: 1.2; max-width: 100%; overflow-wrap: anywhere; padding: .5rem .8rem; text-align: center; text-decoration: none; }
 	@media (max-width: 480px) {
 		.schedule-strip { padding: .5rem .75rem; }
 		.schedule-strip p { font-size: .8rem; }

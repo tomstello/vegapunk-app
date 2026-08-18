@@ -86,7 +86,7 @@ async def install_api_routes(
                 "endChatText": "End chat",
                 "maxUserMessages": 35,
                 "appointmentCta": {
-                    "label": "Schedule a vaccine appointment",
+                    "label": "Schedule now",
                     "url": "https://www.albertsons.com/health/appointments/home",
                 },
             },
