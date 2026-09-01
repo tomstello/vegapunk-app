@@ -14,3 +14,5 @@ __pycache__/
 .claude/
 .cursor/
 .vercel/
+.vercel
+.env*
