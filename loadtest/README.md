@@ -89,8 +89,14 @@ concurrency.
 
 ## Reading the output
 
-- `session ttfb`: HMAC mint, the cheapest call. Its fresh-instance vs
-  warm-instance split is the cleanest cold-start measurement.
+- `session ttfb`: HMAC mint, the cheapest call. Its cold vs warm split is
+  the cleanest cold-start measurement.
+- Instance split, per phase: `cold` is the first request an instance ever
+  served (`n=1` in the header), `routeFirst` is the first time an instance
+  served that route (page, session, or chat) after serving others, `warm` is
+  everything else. Instance age is deliberately not used: instances that had
+  been alive for seconds still paid full initialization on their first hit
+  in test 1, and each route pays its own lazy initialization per instance.
 - `chat headers`: time until Vercel returns response headers. The app sends
   headers only after the scrubber and the first provider delta, so under the
   stub this is roughly `STUB_SCRUB_MS + STUB_FIRST_BYTE_MS` plus platform

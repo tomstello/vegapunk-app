@@ -137,8 +137,15 @@ function percentiles(values) {
 	};
 }
 
+// Instance bookkeeping from the x-loadtest-instance header (id;age=ms;n=count).
+//   cold       the first request this instance ever served (n === 1). Instance
+//              age is deliberately not used: test 1 showed instances that were
+//              seconds old still paying full initialization on their first hit.
+//   routeFirst the first time this instance served this kind of request
+//              (page / session / chat), as observed by response order. Each
+//              route pays its own lazy initialization per instance.
 const instances = new Map();
-function noteInstance(headers) {
+function noteInstance(headers, kind) {
 	const raw = headers.get('x-loadtest-instance');
 	if (!raw) return null;
 	const [id, ...rest] = raw.split(';');
@@ -147,11 +154,13 @@ function noteInstance(headers) {
 	const served = Number(fields.n);
 	let record = instances.get(id);
 	if (!record) {
-		record = { id, firstSeenMs: Math.round(elapsedMs()), requests: 0 };
+		record = { id, firstSeenMs: Math.round(elapsedMs()), requests: 0, routes: {} };
 		instances.set(id, record);
 	}
 	record.requests += 1;
-	return { id, age, n: served, fresh: age < 1_000 };
+	const routeFirst = !record.routes[kind];
+	record.routes[kind] = (record.routes[kind] ?? 0) + 1;
+	return { id, age, n: served, cold: served === 1, routeFirst };
 }
 
 let requestsInFlight = 0;
@@ -245,7 +254,7 @@ async function conversation(index) {
 				ttfb: Math.round(ttfb),
 				total: Math.round(performance.now() - startedAt),
 				bytes,
-				instance: noteInstance(response.headers),
+				instance: noteInstance(response.headers, 'page'),
 				vercelId: response.headers.get('x-vercel-id')
 			};
 			if (!response.ok) {
@@ -262,7 +271,7 @@ async function conversation(index) {
 		record.session = {
 			status: sessionRequest.response.status,
 			ttfb: Math.round(sessionRequest.ttfb),
-			instance: noteInstance(sessionRequest.response.headers),
+			instance: noteInstance(sessionRequest.response.headers, 'session'),
 			vercelId: sessionRequest.response.headers.get('x-vercel-id')
 		};
 		if (!sessionRequest.response.ok) {
@@ -298,7 +307,7 @@ async function conversation(index) {
 			});
 			turn.status = response.status;
 			turn.headersMs = Math.round(ttfb);
-			turn.instance = noteInstance(response.headers);
+			turn.instance = noteInstance(response.headers, 'chat');
 			turn.vercelId = response.headers.get('x-vercel-id');
 			if (!response.ok) {
 				turn.error = await errorCode(response);
@@ -402,14 +411,17 @@ function summarize(results) {
 		...sessions.map((s) => ({ kind: 'session', ms: s.ttfb, instance: s.instance })),
 		...okTurns.map((t) => ({ kind: 'chat', ms: t.firstByte, instance: t.instance }))
 	].filter((r) => r.instance);
-	const split = (kind) => ({
-		freshInstance: percentiles(
-			instanceRequests.filter((r) => r.kind === kind && r.instance.fresh).map((r) => r.ms)
-		),
-		warmInstance: percentiles(
-			instanceRequests.filter((r) => r.kind === kind && !r.instance.fresh).map((r) => r.ms)
-		)
-	});
+	// Three buckets per phase: the instance's very first request, the first
+	// request of this route on an already-used instance, and everything else.
+	const bucketOf = (r) => (r.instance.cold ? 'cold' : r.instance.routeFirst ? 'routeFirst' : 'warm');
+	const split = (kind) => {
+		const rows = instanceRequests.filter((r) => r.kind === kind);
+		return {
+			cold: percentiles(rows.filter((r) => bucketOf(r) === 'cold').map((r) => r.ms)),
+			routeFirst: percentiles(rows.filter((r) => bucketOf(r) === 'routeFirst').map((r) => r.ms)),
+			warm: percentiles(rows.filter((r) => bucketOf(r) === 'warm').map((r) => r.ms))
+		};
+	};
 
 	return {
 		conversations: {
@@ -447,10 +459,11 @@ function summarize(results) {
 				: {
 						distinct: instances.size,
 						requestsWithHeader: instanceRequests.length,
-						freshRequests: instanceRequests.filter((r) => r.instance.fresh).length,
+						coldRequests: instanceRequests.filter((r) => r.instance.cold).length,
+						routeFirstRequests: instanceRequests.filter((r) => bucketOf(r) === 'routeFirst').length,
+						pageTtfb: split('page'),
 						sessionTtfb: split('session'),
-						chatFirstByte: split('chat'),
-						pageTtfb: split('page')
+						chatFirstByte: split('chat')
 					}
 	};
 }
@@ -546,12 +559,19 @@ function printSummary(summary, rows) {
 	if (summary.instances) {
 		const i = summary.instances;
 		console.log(
-			`instances distinct=${i.distinct} requestsWithHeader=${i.requestsWithHeader} freshRequests=${i.freshRequests}`
+			`instances distinct=${i.distinct} requestsWithHeader=${i.requestsWithHeader} coldRequests=${i.coldRequests} routeFirstRequests=${i.routeFirstRequests}`
 		);
-		console.log(`  session ttfb fresh  ${formatPct(i.sessionTtfb.freshInstance)}`);
-		console.log(`  session ttfb warm   ${formatPct(i.sessionTtfb.warmInstance)}`);
-		console.log(`  chat first byte fresh ${formatPct(i.chatFirstByte.freshInstance)}`);
-		console.log(`  chat first byte warm  ${formatPct(i.chatFirstByte.warmInstance)}`);
+		console.log('  (cold = instance\'s first request; routeFirst = first of this route on an instance)');
+		for (const [label, phase] of [
+			['page ttfb', i.pageTtfb],
+			['session ttfb', i.sessionTtfb],
+			['chat first byte', i.chatFirstByte]
+		]) {
+			if (label === 'page ttfb' && !PAGE) continue;
+			console.log(`  ${label.padEnd(16)} cold        ${formatPct(phase.cold)}`);
+			console.log(`  ${''.padEnd(16)} routeFirst  ${formatPct(phase.routeFirst)}`);
+			console.log(`  ${''.padEnd(16)} warm        ${formatPct(phase.warm)}`);
+		}
 	} else {
 		console.log('instances: no x-loadtest-instance header seen (enable PROVIDER_STUB or LOADTEST_INSTANCE_HEADER)');
 	}
