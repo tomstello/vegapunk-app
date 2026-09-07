@@ -19,6 +19,7 @@
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -122,6 +123,33 @@ const uuid = () => crypto.randomUUID();
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const jitter = (ms, fraction = 0.5) =>
 	Math.max(0, Math.round(ms * (1 + (Math.random() * 2 - 1) * fraction)));
+
+// Generator self-measurement. Every latency above is a timestamp taken on
+// this process's event loop; if the loop is busy, timestamps are late and
+// every metric inflates in the same direction as real platform slowness.
+// Loop delay and CPU per progress tick make that inflation visible.
+const loopDelay = monitorEventLoopDelay({ resolution: 10 });
+loopDelay.enable();
+let lastCpu = process.cpuUsage();
+let lastCpuAt = performance.now();
+const generatorSamples = [];
+function sampleGenerator() {
+	const now = performance.now();
+	const cpu = process.cpuUsage(lastCpu);
+	const elapsedMicros = Math.max(1, (now - lastCpuAt) * 1_000);
+	lastCpu = process.cpuUsage();
+	lastCpuAt = now;
+	const sample = {
+		t: Math.round(elapsedMs() / 1_000),
+		loopLagP99Ms: Math.round(loopDelay.percentile(99) / 1e6),
+		loopLagMaxMs: Math.round(loopDelay.max / 1e6),
+		cpuPct: Math.round((100 * (cpu.user + cpu.system)) / elapsedMicros),
+		rssMb: Math.round(process.memoryUsage().rss / 1_048_576)
+	};
+	loopDelay.reset();
+	generatorSamples.push(sample);
+	return sample;
+}
 
 function percentiles(values) {
 	const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
@@ -517,6 +545,13 @@ function timeline(results) {
 	// Fill quiet buckets so the table reads as a continuous timeline.
 	const lastBucket = Math.max(0, ...buckets.keys());
 	for (let t = 0; t <= lastBucket; t += BUCKET_SECONDS) get(t * 1_000);
+	// Worst generator sample that falls inside each bucket.
+	const generatorByBucket = new Map();
+	for (const s of generatorSamples) {
+		const key = bucketFor(s.t * 1_000);
+		const current = generatorByBucket.get(key);
+		if (!current || s.loopLagP99Ms > current.loopLagP99Ms) generatorByBucket.set(key, s);
+	}
 	return [...buckets.values()]
 		.sort((a, b) => a.t - b.t)
 		.map((b) => ({
@@ -528,7 +563,9 @@ function timeline(results) {
 			chatFirstByteP50: percentiles(b.chatFirstByte)?.p50 ?? null,
 			chatTotalP50: percentiles(b.chatTotal)?.p50 ?? null,
 			errors: b.errors,
-			newInstances: b.newInstances
+			newInstances: b.newInstances,
+			genLoopLagP99Ms: generatorByBucket.get(b.t)?.loopLagP99Ms ?? null,
+			genCpuPct: generatorByBucket.get(b.t)?.cpuPct ?? null
 		}));
 }
 
@@ -575,8 +612,20 @@ function printSummary(summary, rows) {
 	} else {
 		console.log('instances: no x-loadtest-instance header seen (enable PROVIDER_STUB or LOADTEST_INSTANCE_HEADER)');
 	}
+	if (generatorSamples.length > 0) {
+		const lag = Math.max(...generatorSamples.map((s) => s.loopLagP99Ms));
+		const lagMax = Math.max(...generatorSamples.map((s) => s.loopLagMaxMs));
+		const cpu = Math.max(...generatorSamples.map((s) => s.cpuPct));
+		const rss = Math.max(...generatorSamples.map((s) => s.rssMb));
+		console.log(
+			`generator: event-loop lag p99 max=${lag}ms (single worst=${lagMax}ms) cpu max=${cpu}% rss max=${rss}MB` +
+				// An idle loop on macOS reads 15-25 ms here from timer coalescing; real
+				// saturation shows as sustained tens to hundreds of milliseconds.
+				(lag > 50 ? '  <-- generator lag is inflating latencies in the affected buckets' : '')
+		);
+	}
 	console.log('');
-	console.log('t(s)   started sessDone sessP50 turnsDone chatFBp50 chatTotP50 errors newInst');
+	console.log('t(s)   started sessDone sessP50 turnsDone chatFBp50 chatTotP50 errors newInst genLag genCPU');
 	for (const r of rows) {
 		console.log(
 			[
@@ -588,7 +637,9 @@ function printSummary(summary, rows) {
 				String(r.chatFirstByteP50 ?? '-').padStart(9),
 				String(r.chatTotalP50 ?? '-').padStart(10),
 				String(r.errors).padStart(6),
-				String(r.newInstances).padStart(7)
+				String(r.newInstances).padStart(7),
+				String(r.genLoopLagP99Ms ?? '-').padStart(6),
+				String(r.genCpuPct ?? '-').padStart(6)
 			].join(' ')
 		);
 	}
@@ -598,8 +649,9 @@ function printSummary(summary, rows) {
 
 const results = new Array(N);
 const progress = setInterval(() => {
+	const g = sampleGenerator();
 	console.error(
-		`[t=${Math.round(elapsedMs() / 1_000)}s] started=${conversationsStarted}/${N} finished=${conversationsFinished} failed=${conversationsFailed} inFlight=${requestsInFlight} instances=${instances.size}`
+		`[t=${g.t}s] started=${conversationsStarted}/${N} finished=${conversationsFinished} failed=${conversationsFailed} inFlight=${requestsInFlight} instances=${instances.size} lagP99=${g.loopLagP99Ms}ms cpu=${g.cpuPct}%`
 	);
 }, 5_000);
 
@@ -608,6 +660,8 @@ try {
 	else await runClosedLoop(results);
 } finally {
 	clearInterval(progress);
+	sampleGenerator();
+	loopDelay.disable();
 }
 
 const summary = summarize(results);
@@ -630,6 +684,7 @@ const report = {
 	},
 	summary,
 	timeline: rows,
+	generator: generatorSamples,
 	instances: [...instances.values()],
 	conversations: results
 };

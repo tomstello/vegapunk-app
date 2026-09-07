@@ -109,6 +109,32 @@ concurrency.
 - Results JSON in `loadtest/results/` (gitignored) holds every conversation
   and turn for later analysis.
 
+## Is the generator saturated?
+
+Every latency the harness reports is a timestamp taken on its own event
+loop. A busy loop takes them late, which inflates every metric in the same
+direction as real platform slowness. Two checks:
+
+- **Built-in.** Each progress line and timeline bucket carries `genLag`
+  (event-loop delay p99 for that interval) and `genCPU` (process CPU
+  percent). An idle loop on macOS reads 15 to 25 ms here because of timer
+  coalescing, so that is the baseline, not a warning; sustained values of
+  50 ms and up mean the affected buckets carry that much generator-side
+  inflation, and the summary flags it. `client_*` error codes (`ETIMEDOUT`,
+  `ECONNRESET`, `EMFILE`, `EADDRNOTAVAIL`) are also generator-side.
+- **Unloaded probe.** Run a second harness process at concurrency 2 in
+  another terminal for the duration of the big run:
+
+  ```sh
+  node loadtest/harness.mjs --concurrency 2 --conversations 40 --turns 2 \
+    --think 0 --label probe-<step>
+  ```
+
+  Its process has an idle event loop, so its numbers are the platform's
+  without generator bias. If the probe's chat headers and streaming window
+  match the big run's, the generator is not inflating anything; if the big
+  run reads higher, the difference is the generator's contribution.
+
 ## Limits of this round
 
 - The stub does not open outbound sockets, so per-instance connection or
