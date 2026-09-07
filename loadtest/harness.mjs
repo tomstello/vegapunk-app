@@ -329,10 +329,21 @@ async function conversation(index) {
 		}
 		return record;
 	} catch (error) {
+		// Node's fetch wraps socket errors as TypeError('fetch failed') with the
+		// real code on `cause`, or on `cause.errors[]` for multi-address hosts.
+		const cause = error?.cause;
+		const code = cause?.code ?? cause?.errors?.find((e) => e?.code)?.code;
 		record.error =
 			error?.name === 'TimeoutError'
 				? 'client_timeout'
-				: `client_${String(error?.cause?.code ?? error?.message ?? error).slice(0, 80)}`;
+				: `client_${String(code ?? cause?.message ?? error?.message ?? error).slice(0, 80)}`;
+		// A client-side failure during a chat request leaves the turn without a
+		// status; stamp it so the turn error map counts it like an HTTP error.
+		const lastTurn = record.turns.at(-1);
+		if (lastTurn && lastTurn.status === undefined && lastTurn.error === undefined) {
+			lastTurn.error = record.error;
+			lastTurn.total = Math.round(elapsedMs()) - lastTurn.startedMs;
+		}
 		return record;
 	} finally {
 		record.endedMs = Math.round(elapsedMs());
@@ -490,6 +501,9 @@ function timeline(results) {
 		if (c.error) get(c.endedMs).errors += 1;
 	}
 	for (const instance of instances.values()) get(instance.firstSeenMs).newInstances += 1;
+	// Fill quiet buckets so the table reads as a continuous timeline.
+	const lastBucket = Math.max(0, ...buckets.keys());
+	for (let t = 0; t <= lastBucket; t += BUCKET_SECONDS) get(t * 1_000);
 	return [...buckets.values()]
 		.sort((a, b) => a.t - b.t)
 		.map((b) => ({
