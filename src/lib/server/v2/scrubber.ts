@@ -1,3 +1,4 @@
+import { providerFetch } from './loadtestStub';
 import { MAX_USER_CODE_POINTS, OPENROUTER_RETRYABLE_STATUS_CODES } from './limits';
 import type { ScrubberConfig, ScrubberModel } from './studyConfig';
 import type { HistoryMessage } from './tokens';
@@ -306,7 +307,7 @@ async function attemptModel(args: {
 	try {
 		let response: Response;
 		try {
-			response = await fetch(args.model.baseUrl, {
+			response = await providerFetch(args.model.baseUrl, {
 				method: 'POST',
 				headers: {
 					authorization: `Bearer ${args.apiKey}`,

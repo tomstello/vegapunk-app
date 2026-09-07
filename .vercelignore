@@ -19,3 +19,6 @@ vite.config.ts.timestamp-*
 
 # Never ship the local legacy harness even if it is restored from history.
 src/routes/test/
+
+# Load generator and results; not part of the deployed app.
+loadtest/

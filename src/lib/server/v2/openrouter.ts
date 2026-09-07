@@ -1,3 +1,4 @@
+import { providerFetch } from './loadtestStub';
 import type { StudyConfig } from './studyConfig';
 import {
 	MAX_PROVIDER_SSE_EVENT_CHARS,
@@ -261,7 +262,7 @@ async function prepareAttempt(args: {
 	]);
 	let response: Response;
 	try {
-		response = await fetch(args.config.model.baseUrl, {
+		response = await providerFetch(args.config.model.baseUrl, {
 			method: 'POST',
 			headers: {
 				authorization: `Bearer ${args.apiKey}`,

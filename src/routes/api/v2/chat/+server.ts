@@ -14,6 +14,7 @@ import {
 	MAX_CONTEXT_UTF8_BYTES
 } from '$lib/server/v2/limits';
 import { openRouterSessionId } from '$lib/server/v2/crypto';
+import { loadtestPolicy } from '$lib/server/v2/loadtestStub';
 import { OpenRouterStartError, startOpenRouterStream } from '$lib/server/v2/openrouter';
 import { ScrubberError, scrubUserMessage } from '$lib/server/v2/scrubber';
 import { ChatRequestSchema } from '$lib/server/v2/schemas';
@@ -36,6 +37,9 @@ function sse(event: 'meta' | 'delta' | 'done' | 'error', data: Record<string, un
 
 function validOpenRouterKey(value: string | undefined): string {
 	const key = value?.trim() ?? '';
+	// The load-test stub never contacts a provider, so a stubbed deployment may
+	// run with no OpenRouter credential at all (guaranteed zero model spend).
+	if (loadtestPolicy().stub) return 'loadtest-stub';
 	if (!key || /\s/.test(key) || key.length > 512) {
 		throw new V2HttpError(503, 'service_unavailable', 'The response service is unavailable');
 	}
