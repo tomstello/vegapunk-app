@@ -100,6 +100,12 @@ const V10_CONFIG_HASHES = Object.freeze({
 	covid: 'c691c84e4886cd8b6c47bfd1385fe264e4e7e1130623b85556487538a7cc3fad',
 	combo: 'df7244c5a1b6f7382db2302feb38aeede674496ef01819bd901abdc8fa3ef6af'
 });
+// v11 = v10 + max_tokens 6000 on the answer call (ADO 12588, 2026-09-09).
+const V11_CONFIG_HASHES = Object.freeze({
+	flu: 'c2dfef4e5b4200b2dd6673abb9c6767ba3ad2e90afebbe1d0e820d39a00e9b3d',
+	covid: '813b423e037ea0be53113c8da263a2acb4f87be2bab6fb0601e227513e17245d',
+	combo: '6dec375840c54f3a0dea90d32aab3ffde6cdcf64d17b9297df211bdf67689bfa'
+});
 const V7_CONFIG_HASHES = Object.freeze({
 	flu: '0da70cec1ff637fa73b9108b678c6a18503e56abeb57f5d04cf0a184c76e9bda',
 	covid: '5444d5f3d12a91384ba427d3e84baf0c5361c631dd09d0eb713a17f373a5c5b7',
@@ -274,8 +280,8 @@ test('fixed registry exposes public UI but not the prompt or provider configurat
 		const config = configs.getStudyConfig(arm);
 		const publicConfig = configs.getPublicStudyConfig(config);
 		assert.equal(config.condition, arm);
-		assert.equal(config.configVersion, `albertsons-2026-${arm}-v10`);
-		assert.equal(config.configHash, V10_CONFIG_HASHES[arm]);
+		assert.equal(config.configVersion, `albertsons-2026-${arm}-v11`);
+		assert.equal(config.configHash, V11_CONFIG_HASHES[arm]);
 		assert.deepEqual(publicConfig.ui.appointmentCta, {
 			label: 'Schedule now',
 			url: 'https://www.albertsons.com/health/appointments/home'
@@ -398,6 +404,52 @@ test('configuration hash covers runtime limits, retries, and deadlines', () => {
 		}),
 		'reasoning effort must affect configHash'
 	);
+	assert.notEqual(
+		configHash,
+		configs.hashStudyConfigMaterial({
+			...material,
+			model: { ...material.model, maxTokens: material.model.maxTokens + 1 }
+		}),
+		'max_tokens must affect configHash'
+	);
+});
+
+test('v11 sends max_tokens on the answer call; v10 and earlier send none', async () => {
+	const originalFetch = globalThis.fetch;
+	const bodies = [];
+	const providerSse =
+		'data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}\n\n' +
+		'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+	globalThis.fetch = async (_url, init) => {
+		bodies.push(JSON.parse(String(init.body)));
+		return new Response(providerSse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+	};
+	try {
+		for (const config of [
+			configs.getStudyConfig('flu'),
+			configs.getStudyConfig('demo'),
+			configs.getStudyConfigRevision('flu', 'albertsons-2026-flu-v10', V10_CONFIG_HASHES.flu)
+		]) {
+			assert.ok(config);
+			const stream = await openrouter.startOpenRouterStream({
+				config,
+				history: [],
+				userMessage: 'Is it safe?',
+				providerSessionId: SESSION_ID,
+				apiKey: 'sk-or-test',
+				clientSignal: new AbortController().signal
+			});
+			stream.cancel();
+		}
+		assert.equal(bodies[0].max_tokens, 6_000, 'active flu revision sends max_tokens');
+		assert.equal(bodies[1].max_tokens, 6_000, 'active demo revision sends max_tokens');
+		assert.equal('max_tokens' in bodies[2], false, 'retained v10 sends no max_tokens');
+		// Everything else in the request is unchanged between v10 and v11.
+		const { max_tokens: _omitted, ...v11Rest } = bodies[0];
+		assert.deepEqual(v11Rest, bodies[2]);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 });
 
 test('Opus 5 load-balances only across the two US ZDR routes while every shipped revision remains resumable', () => {
@@ -420,11 +472,26 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 			allow_fallbacks: true,
 			require_parameters: true
 		});
-		assert.equal(active.configVersion, `albertsons-2026-${arm}-v10`);
-		assert.equal(active.configHash, V10_CONFIG_HASHES[arm]);
+		assert.equal(active.configVersion, `albertsons-2026-${arm}-v11`);
+		assert.equal(active.configHash, V11_CONFIG_HASHES[arm]);
 		assert.equal(active.model.name, 'anthropic/claude-opus-5');
 		assert.deepEqual(active.model.reasoning, { effort: 'low', exclude: true });
+		// v11: max_tokens bounds OpenRouter's pre-flight credit hold. It must sit
+		// above the app's own 16,000 code-point capture cap so it never fires
+		// first on a real answer.
+		assert.equal(active.model.maxTokens, 6_000);
+		assert.ok(active.model.maxTokens > active.runtimePolicy.maxAssistantCodePoints / 4);
 		assert.equal(active.runtimePolicy.providerMaxAttempts, 1);
+
+		// v10 (no max_tokens) stays resumable and hash-stable for in-flight sessions.
+		const previousV10 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v10`,
+			V10_CONFIG_HASHES[arm]
+		);
+		assert.ok(previousV10, `${arm} prior v10 revision must remain resumable`);
+		assert.equal('maxTokens' in previousV10.model, false);
+		assert.equal(previousV10.systemPrompt, active.systemPrompt);
 		assert.equal(active.ui.themeId, 'albertsons-v1');
 		assert.deepEqual(active.ui.suggestedQuestions, V5_SUGGESTED_QUESTIONS[arm]);
 		// v7 adds the redaction screen. Primary = Gemini 3.1 Flash Lite

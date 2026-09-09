@@ -35,6 +35,7 @@ const configurations = ['flu', 'covid', 'combo'].map((condition) => {
 		initialMessagesSha256: sha256(JSON.stringify(config.initialMessages)),
 		model: config.model.name,
 		reasoning: config.model.reasoning ?? null,
+		maxTokens: config.model.maxTokens ?? null,
 		providerOrder: config.model.provider.order ? [...config.model.provider.order] : null,
 		providerOnly: [...config.model.provider.only],
 		zdr: config.model.provider.zdr,

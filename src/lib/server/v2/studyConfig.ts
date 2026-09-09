@@ -97,6 +97,17 @@ export type StudyConfig = {
 		};
 		cacheControl: { type: 'ephemeral' };
 		reasoning?: { effort: 'low'; exclude: true };
+		// Sent as `max_tokens`. Optional so v1-v10 hashes reproduce; present from
+		// v11 on. Not a length target: the app's 16,000 code-point capture cap
+		// (MAX_ASSISTANT_CODE_POINTS, roughly 4-5k tokens) already bounds every
+		// answer below this. It exists because OpenRouter checks each request's
+		// maximum possible cost against uncommitted credit before forwarding it
+		// and, with no max_tokens, assumes a default far above what we ever
+		// produce. Sequence 02 load tests (ADO 12588, 2026-09-09) hit HTTP 402
+		// refusals at about 80 in-flight Opus 5 requests with an $80 balance,
+		// consistent with a ~32k-token default hold; 6,000 cuts that hold by
+		// about 5x.
+		maxTokens?: number;
 	};
 	// Optional so every previously issued v1-v6 hash remains byte-for-byte
 	// reproducible; present from v7 on. When set, /api/v2/chat redacts the
@@ -619,6 +630,7 @@ function makeConfig(
 		ui: PublicStudyUi;
 		modelName?: StudyConfig['model']['name'];
 		reasoning?: StudyConfig['model']['reasoning'];
+		maxTokens?: StudyConfig['model']['maxTokens'];
 		scrubber?: ScrubberConfig;
 		demo?: StudyConfig['demo'];
 	}
@@ -640,7 +652,9 @@ function makeConfig(
 		temperature: null,
 		provider,
 		cacheControl: { type: 'ephemeral' },
-		...(options?.reasoning ? { reasoning: options.reasoning } : {})
+		...(options?.reasoning ? { reasoning: options.reasoning } : {}),
+		// Conditional like `reasoning`: absent for v1-v10 so their hashes hold.
+		...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {})
 	};
 	const material: Omit<StudyConfig, 'configHash'> = {
 		condition,
@@ -682,6 +696,13 @@ const OPUS5_RUNTIME_POLICY = Object.freeze({
 	...V2_RUNTIME_POLICY,
 	providerMaxAttempts: 1
 });
+
+// v11 (2026-09-09): identical to v10 except the answer call sends
+// max_tokens. See StudyConfig['model'].maxTokens for the OpenRouter credit-
+// hold finding behind it (ADO 12588). 6,000 sits above the app's own capture
+// cap so no participant-visible behaviour changes. Both pinned routes list
+// max_tokens among their supported parameters, so require_parameters holds.
+const V11_MAX_TOKENS = 6_000;
 
 // v9 copy (Tom, 2026-08-14): privacy note drops "and provides general
 // information"; scheduling button label becomes the literal visible text.
@@ -756,6 +777,15 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
 				scrubber: SCRUBBER_V2
+			}),
+			// v11: v10 plus max_tokens on the answer call (see V11_MAX_TOKENS).
+			makeConfig('flu', V10_SYSTEM_PROMPTS.flu, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-flu-v11',
+				ui: albertsonsV1Ui('flu', SET_B_SUGGESTED_QUESTIONS.flu, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				maxTokens: V11_MAX_TOKENS,
+				scrubber: SCRUBBER_V2
 			})
 	],
 	covid: [
@@ -821,6 +851,15 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
 				scrubber: SCRUBBER_V2
+			}),
+			// v11: v10 plus max_tokens on the answer call (see V11_MAX_TOKENS).
+			makeConfig('covid', V10_SYSTEM_PROMPTS.covid, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-covid-v11',
+				ui: albertsonsV1Ui('covid', SET_B_SUGGESTED_QUESTIONS.covid, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				maxTokens: V11_MAX_TOKENS,
+				scrubber: SCRUBBER_V2
 			})
 	],
 	demo: [
@@ -829,6 +868,16 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 			ui: albertsonsV1Ui('demo', SET_B_SUGGESTED_QUESTIONS.demo, DEMO_APPOINTMENT_CTA, V9_PRIVACY_NOTE, DEMO_MAX_TURNS, 'clinical-blue-v1'),
 			modelName: 'anthropic/claude-opus-5',
 			reasoning: { effort: 'low', exclude: true },
+			scrubber: SCRUBBER_V2,
+			demo: { maxTurns: DEMO_MAX_TURNS, standalone: true }
+		}),
+		// demo v2: demo v1 plus max_tokens on the answer call (see V11_MAX_TOKENS).
+		makeConfig('demo', V10_SYSTEM_PROMPTS.combo, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+			configVersion: 'vaccine-chat-demo-v2',
+			ui: albertsonsV1Ui('demo', SET_B_SUGGESTED_QUESTIONS.demo, DEMO_APPOINTMENT_CTA, V9_PRIVACY_NOTE, DEMO_MAX_TURNS, 'clinical-blue-v1'),
+			modelName: 'anthropic/claude-opus-5',
+			reasoning: { effort: 'low', exclude: true },
+			maxTokens: V11_MAX_TOKENS,
 			scrubber: SCRUBBER_V2,
 			demo: { maxTurns: DEMO_MAX_TURNS, standalone: true }
 		})
@@ -895,6 +944,15 @@ const CONFIG_REVISIONS: Record<StudyCondition, readonly StudyConfig[]> = {
 				ui: albertsonsV1Ui('combo', SET_B_SUGGESTED_QUESTIONS.combo, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
 				modelName: 'anthropic/claude-opus-5',
 				reasoning: { effort: 'low', exclude: true },
+				scrubber: SCRUBBER_V2
+			}),
+			// v11: v10 plus max_tokens on the answer call (see V11_MAX_TOKENS).
+			makeConfig('combo', V10_SYSTEM_PROMPTS.combo, OPUS5_US_ZDR_LOAD_BALANCED_PROVIDER_POLICY, OPUS5_RUNTIME_POLICY, {
+				configVersion: 'albertsons-2026-combo-v11',
+				ui: albertsonsV1Ui('combo', SET_B_SUGGESTED_QUESTIONS.combo, V9_APPOINTMENT_CTA, V9_PRIVACY_NOTE),
+				modelName: 'anthropic/claude-opus-5',
+				reasoning: { effort: 'low', exclude: true },
+				maxTokens: V11_MAX_TOKENS,
 				scrubber: SCRUBBER_V2
 			})
 	]

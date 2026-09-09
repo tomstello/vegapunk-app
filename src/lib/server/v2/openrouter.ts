@@ -338,6 +338,9 @@ async function prepareAttempt(args: {
 					? {}
 					: { temperature: args.config.model.temperature }),
 				...(args.config.model.reasoning ? { reasoning: args.config.model.reasoning } : {}),
+				// Bounds OpenRouter's pre-flight credit hold, not the answer: see
+				// StudyConfig['model'].maxTokens. Absent on revisions before v11.
+				...(args.config.model.maxTokens !== undefined ? { max_tokens: args.config.model.maxTokens } : {}),
 				provider: args.config.model.provider
 			}),
 			signal
