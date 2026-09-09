@@ -54,6 +54,8 @@ if (args.help === 'true') {
   --rate <per-second>     Open loop: start conversations at this rate, unbounded concurrency
   --turns <n>             Chat turns per conversation (default 3)
   --think <ms>            Pause between turns, +/-50% jitter (default 5000)
+  --questions <short|long>  Question set: short-answer prompts that bound live-model
+                          spend (default), or the open sequence 01 questions
   --no-page               Skip the study page GET
   --timeout <ms>          Per-request timeout (default 200000)
   --bucket <seconds>      Timeline bucket width (default 5)
@@ -103,7 +105,28 @@ if (RATE !== null && !(RATE > 0)) {
 }
 const PAGE_PATH = ARM === 'demo' ? '/demo/vaccine-chat' : `/study/albertsons-2026/${ARM}`;
 
-const QUESTIONS = [
+// Two question sets. Against the stub the text is irrelevant. Against the
+// live model it sets the answer length and therefore the spend: the system
+// prompt asks for thorough answers with sources, so an open question ("what
+// are the side effects?") runs 15 to 30 s and several hundred output tokens.
+// SHORT_QUESTIONS are yes/no or single-fact questions with an explicit
+// brevity cue so a turn stays near 100 to 200 output tokens. LONG_QUESTIONS
+// is the sequence 01 list, kept for a like-for-like comparison run.
+const SHORT_QUESTIONS = [
+	'In one sentence: do I need a flu shot every year?',
+	'Yes or no, briefly: can I get the flu and COVID shots at the same visit?',
+	'In one or two sentences: how long after the shot does protection start?',
+	'Briefly: is a sore arm after the shot normal?',
+	'One sentence please: is the flu shot free with insurance?',
+	'Yes or no, in a sentence: can the flu shot give me the flu?',
+	'In two sentences at most: is it safe to get the shot while pregnant?',
+	'Briefly: is it okay to get vaccinated if I have a mild cold?',
+	'One sentence: does the shot still help if I already had COVID this year?',
+	'Briefly: what month is best to get the flu shot?',
+	'Yes or no, briefly: should I wait 24 hours before exercising after the shot?',
+	'In one sentence: can I take ibuprofen after the shot?'
+];
+const LONG_QUESTIONS = [
 	'Is the flu shot safe for people over 65?',
 	'What are the side effects of the COVID vaccine?',
 	'Can I get both shots at the same visit?',
@@ -113,6 +136,13 @@ const QUESTIONS = [
 	'Is it safe to get vaccinated while pregnant?',
 	'What should I do if I feel unwell after the shot?'
 ];
+const QUESTION_SETS = { short: SHORT_QUESTIONS, long: LONG_QUESTIONS };
+const QUESTION_SET = args.questions ?? 'short';
+if (!(QUESTION_SET in QUESTION_SETS)) {
+	console.error(`Unknown question set ${QUESTION_SET}; use short or long`);
+	process.exit(2);
+}
+const QUESTIONS = QUESTION_SETS[QUESTION_SET];
 
 // --- Measurement helpers -------------------------------------------------------
 
@@ -677,6 +707,7 @@ const report = {
 		wallSeconds: Math.round(elapsedMs() / 100) / 10,
 		conversations: N,
 		turns: TURNS,
+		questions: QUESTION_SET,
 		thinkMs: THINK_MS,
 		page: PAGE,
 		mode: RATE ? { openLoop: true, ratePerSecond: RATE } : { closedLoop: true, concurrency: CONCURRENCY, rampSeconds: RAMP_SECONDS },

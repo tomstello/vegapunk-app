@@ -87,6 +87,16 @@ many are still running. This is what an SMS wave looks like; use it for the
 users take longer; a lower value packs more chat streams into the same
 concurrency.
 
+`--questions short|long` picks the user-turn text. Against the stub it
+makes no difference. Against the live model it sets answer length and
+therefore spend: the system prompt asks for thorough answers with sources,
+so the open sequence 01 questions (`long`) run 15 to 30 s and several
+hundred output tokens each. The default `short` set is yes/no and
+single-fact questions with an explicit brevity cue, aimed at 100 to 200
+output tokens a turn. Use `long` only for a deliberate like-for-like
+comparison. The set used is recorded under `settings.questions` in the
+results file.
+
 ## Reading the output
 
 - `session ttfb`: HMAC mint, the cheapest call. Its cold vs warm split is
