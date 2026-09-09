@@ -11,10 +11,22 @@ import type { HistoryMessage, SessionClaims } from './tokens';
 
 const BLOB_API = 'https://blob.vercel-storage.com';
 
+/** Provider provenance for the assistant turn that produced this write. The
+ * object is overwritten per turn, so only the latest turn's generation is kept
+ * here; every turn's generation ID is also in the v2_turn_complete log event. */
+export type TurnGeneration = Readonly<{
+	sequence: number;
+	assistantMessageId: string;
+	generationId: string | null;
+	finishReason: string;
+	completionStatus: 'complete' | 'capped';
+}>;
+
 export async function recordDemoTranscript(
 	session: SessionClaims,
 	config: StudyConfig,
-	history: readonly HistoryMessage[]
+	history: readonly HistoryMessage[],
+	generation?: TurnGeneration
 ): Promise<void> {
 	const token = env.BLOB_READ_WRITE_TOKEN?.trim();
 	if (!token || !config.demo) return;
@@ -27,7 +39,8 @@ export async function recordDemoTranscript(
 		chatSessionKey: session.sid,
 		updatedAtISO: new Date().toISOString(),
 		userTurns: history.filter((m) => m.role === 'user').length,
-		messages: history.map(({ id, role, content }) => ({ id, role, content }))
+		messages: history.map(({ id, role, content }) => ({ id, role, content })),
+		...(generation ? { lastTurn: generation } : {})
 	});
 	try {
 		const response = await fetch(

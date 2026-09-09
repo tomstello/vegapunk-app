@@ -1591,3 +1591,315 @@ test('preview-preserved revisions serve new sessions; all other historical revis
 	assert.equal(schemas.SessionRequestSchema.safeParse({ v: 2, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID, preferredConfigVersion: '' }).success, false);
 	assert.equal(schemas.SessionRequestSchema.safeParse({ v: 2, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID, bogus: 1 }).success, false);
 });
+
+// --- Observability (ADO 12573, 12575, 12576, 12579) ---------------------------
+
+function fetchFailure(message, cause) {
+	// Shape of an undici fetch() rejection: a bare TypeError whose `cause` is
+	// the Node system error carrying the code that actually matters.
+	return Object.assign(new TypeError('fetch failed'), {
+		cause: Object.assign(new Error(message), cause)
+	});
+}
+
+test('LOG_LEVEL overrides the default level and unknown values fall back loudly', async () => {
+	const { resolveLogLevel } = await loadServerModule('src/lib/logLevel.ts');
+	assert.deepEqual(resolveLogLevel({}), { level: 'info' });
+	assert.deepEqual(resolveLogLevel({ NODE_ENV: 'development' }), { level: 'debug' });
+	assert.deepEqual(resolveLogLevel({ NODE_ENV: 'production', LOG_LEVEL: 'debug' }), { level: 'debug' });
+	assert.deepEqual(resolveLogLevel({ NODE_ENV: 'development', LOG_LEVEL: ' WARN ' }), { level: 'warn' });
+	assert.deepEqual(resolveLogLevel({ LOG_LEVEL: 'silent' }), { level: 'silent' });
+	assert.deepEqual(resolveLogLevel({ LOG_LEVEL: 'verbose' }), { level: 'info', rejected: 'verbose' });
+	assert.deepEqual(resolveLogLevel({ LOG_LEVEL: '' }), { level: 'info' });
+});
+
+test('network diagnostics flatten the cause chain and never carry a credential', async () => {
+	const { networkErrorDiagnostic } = await loadServerModule('src/lib/server/v2/providerDiagnostics.ts');
+	const reset = networkErrorDiagnostic(
+		fetchFailure('connect ECONNRESET 104.18.2.115:443', { code: 'ECONNRESET', syscall: 'connect', errno: -54 })
+	);
+	assert.deepEqual(reset, {
+		name: 'TypeError',
+		code: 'ECONNRESET',
+		syscall: 'connect',
+		errno: -54,
+		message: 'fetch failed',
+		causeName: 'Error',
+		causeMessage: 'connect ECONNRESET 104.18.2.115:443'
+	});
+	// undici's own errors: code but no syscall.
+	const undici = networkErrorDiagnostic(
+		fetchFailure('Connect Timeout Error', { code: 'UND_ERR_CONNECT_TIMEOUT', name: 'ConnectTimeoutError' })
+	);
+	assert.equal(undici.code, 'UND_ERR_CONNECT_TIMEOUT');
+	assert.equal(undici.causeName, 'ConnectTimeoutError');
+	// Abort reasons are plain errors: their message identifies the deadline.
+	assert.deepEqual(networkErrorDiagnostic(new Error('stream_idle_timeout')), {
+		name: 'Error',
+		message: 'stream_idle_timeout'
+	});
+	// Names-and-codes mode (scrubber) drops every free-form message.
+	const quiet = networkErrorDiagnostic(fetchFailure('getaddrinfo ENOTFOUND openrouter.ai', { code: 'ENOTFOUND', syscall: 'getaddrinfo' }), {
+		includeMessage: false
+	});
+	assert.deepEqual(quiet, { name: 'TypeError', code: 'ENOTFOUND', syscall: 'getaddrinfo', causeName: 'Error' });
+	// Defensive redaction of anything key-shaped, and bounded length.
+	const leaky = networkErrorDiagnostic(new Error(`rejected Bearer sk-or-v1-abcdef header ${'x'.repeat(400)}`));
+	assert.equal(leaky.message.includes('sk-or-'), false);
+	assert.equal(leaky.message.includes('abcdef'), false);
+	assert.ok(leaky.message.length <= 201);
+	// Non-error throwables do not crash the diagnostic path.
+	assert.deepEqual(networkErrorDiagnostic('boom'), { name: 'string' });
+	assert.deepEqual(networkErrorDiagnostic(undefined), { name: 'undefined' });
+});
+
+test('provider connect failure is typed as before but carries the network specifics and attempt count', async () => {
+	const originalFetch = globalThis.fetch;
+	let calls = 0;
+	globalThis.fetch = async () => {
+		calls += 1;
+		throw fetchFailure('connect ECONNRESET 104.18.2.115:443', { code: 'ECONNRESET', syscall: 'connect', errno: -54 });
+	};
+	try {
+		// The retained combo v2 revision still permits a second attempt; the
+		// active Opus 5 policy delegates retries to OpenRouter and allows one.
+		const retryingConfig = configs.getStudyConfigRevision(
+			'combo',
+			'albertsons-2026-combo-v2',
+			V2_CONFIG_HASHES.combo
+		);
+		assert.ok(retryingConfig);
+		await assert.rejects(
+			openrouter.startOpenRouterStream({
+				config: retryingConfig,
+				history: [],
+				userMessage: 'Is it safe?',
+				providerSessionId: SESSION_ID,
+				apiKey: 'sk-or-test',
+				clientSignal: new AbortController().signal
+			}),
+			(error) => {
+				assert.equal(error instanceof openrouter.OpenRouterStartError, true);
+				// Participant-facing classification is unchanged by this change.
+				assert.equal(error.code, 'provider_start_timeout');
+				assert.equal(error.status, 503);
+				assert.equal(error.retryable, true);
+				// Operator-facing detail is new.
+				assert.equal(error.attempts, 2);
+				assert.equal(error.diagnostic.phase, 'connect');
+				assert.equal(error.diagnostic.abortedBy, 'none');
+				assert.equal(error.diagnostic.network.code, 'ECONNRESET');
+				assert.equal(error.diagnostic.network.syscall, 'connect');
+				assert.equal(error.diagnostic.network.causeMessage, 'connect ECONNRESET 104.18.2.115:443');
+				assert.equal(JSON.stringify(error.diagnostic).includes('sk-or-test'), false);
+				return true;
+			}
+		);
+		assert.equal(calls, 2, 'a retryable connect failure is attempted twice');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('provider first-byte abort records which deadline or party stopped the attempt', async () => {
+	const originalFetch = globalThis.fetch;
+	const client = new AbortController();
+	globalThis.fetch = async (_url, init) =>
+		new Response(
+			new ReadableStream({
+				start(controller) {
+					controller.enqueue(new TextEncoder().encode(': OPENROUTER PROCESSING\n\n'));
+					init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
+					// Abort from the client side once the provider has connected.
+					setTimeout(() => client.abort(new DOMException('participant left', 'AbortError')), 5);
+				}
+			}),
+			{ status: 200, headers: { 'content-type': 'text/event-stream' } }
+		);
+	try {
+		await assert.rejects(
+			openrouter.startOpenRouterStream({
+				config: configs.getStudyConfig('flu'),
+				history: [],
+				userMessage: 'Is it safe?',
+				providerSessionId: SESSION_ID,
+				apiKey: 'sk-or-test',
+				clientSignal: client.signal
+			}),
+			(error) => {
+				assert.equal(error.code, 'provider_unavailable');
+				assert.equal(error.retryable, false);
+				assert.equal(error.attempts, 1);
+				assert.equal(error.diagnostic.phase, 'first_byte');
+				assert.equal(error.diagnostic.abortedBy, 'client');
+				assert.equal(error.diagnostic.network.name, 'AbortError');
+				return true;
+			}
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('generation ID comes from the response header, else the first streamed chunk', async () => {
+	const originalFetch = globalThis.fetch;
+	const providerSse = [
+		'data: {"id":"gen-chunk-0123","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
+		'',
+		'data: {"id":"gen-chunk-0123","choices":[{"delta":{},"finish_reason":"stop"}]}',
+		'',
+		'data: [DONE]',
+		''
+	].join('\n');
+	const start = () =>
+		openrouter.startOpenRouterStream({
+			config: configs.getStudyConfig('flu'),
+			history: [],
+			userMessage: 'Is it safe?',
+			providerSessionId: SESSION_ID,
+			apiKey: 'sk-or-test',
+			clientSignal: new AbortController().signal
+		});
+	try {
+		globalThis.fetch = async () =>
+			new Response(providerSse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+		const fromChunk = await start();
+		assert.equal(fromChunk.generationId, 'gen-chunk-0123');
+		fromChunk.cancel();
+
+		globalThis.fetch = async () =>
+			new Response(providerSse, {
+				status: 200,
+				headers: { 'content-type': 'text/event-stream', 'x-generation-id': 'gen-header-9' }
+			});
+		const fromHeader = await start();
+		assert.equal(fromHeader.generationId, 'gen-header-9');
+		fromHeader.cancel();
+
+		// A header that is not a plain token is ignored rather than logged.
+		globalThis.fetch = async () =>
+			new Response(providerSse, {
+				status: 200,
+				headers: { 'content-type': 'text/event-stream', 'x-generation-id': 'gen <script>' }
+			});
+		const sanitized = await start();
+		assert.equal(sanitized.generationId, 'gen-chunk-0123');
+		sanitized.cancel();
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('mid-stream transport failure keeps its coarse code and attaches a diagnostic cause', async () => {
+	const originalFetch = globalThis.fetch;
+	const encoder = new TextEncoder();
+	globalThis.fetch = async () =>
+		new Response(
+			new ReadableStream({
+				start(controller) {
+					controller.enqueue(
+						encoder.encode('data: {"id":"gen-mid","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}\n\n')
+					);
+					setTimeout(
+						() =>
+							controller.error(
+								Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET', syscall: 'read' })
+							),
+						5
+					);
+				}
+			}),
+			{ status: 200, headers: { 'content-type': 'text/event-stream' } }
+		);
+	try {
+		const stream = await openrouter.startOpenRouterStream({
+			config: configs.getStudyConfig('flu'),
+			history: [],
+			userMessage: 'Is it safe?',
+			providerSessionId: SESSION_ID,
+			apiKey: 'sk-or-test',
+			clientSignal: new AbortController().signal
+		});
+		const events = [];
+		for await (const event of stream.events()) events.push(event);
+		assert.deepEqual(events[0], { kind: 'delta', text: 'Hello' });
+		const last = events.at(-1);
+		assert.equal(last.kind, 'error');
+		assert.equal(last.code, 'stream_interrupted');
+		assert.equal(last.cause.code, 'ECONNRESET');
+		assert.equal(last.cause.syscall, 'read');
+		assert.equal(last.cause.message, 'read ECONNRESET');
+		// Provider-emitted error payloads are not transport failures: no cause.
+		globalThis.fetch = async () =>
+			new Response(
+				'data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}\n\n' +
+					'data: {"error":{"code":"overloaded","message":"upstream overloaded"}}\n\n',
+				{ status: 200, headers: { 'content-type': 'text/event-stream' } }
+			);
+		const providerErrored = await openrouter.startOpenRouterStream({
+			config: configs.getStudyConfig('flu'),
+			history: [],
+			userMessage: 'Is it safe?',
+			providerSessionId: SESSION_ID,
+			apiKey: 'sk-or-test',
+			clientSignal: new AbortController().signal
+		});
+		const providerEvents = [];
+		for await (const event of providerErrored.events()) providerEvents.push(event);
+		assert.deepEqual(providerEvents.at(-1), { kind: 'error', code: 'overloaded' });
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('scrubber transport failure exposes error names and codes but no free-form text', async () => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () => {
+		throw fetchFailure('getaddrinfo ENOTFOUND openrouter.ai', { code: 'ENOTFOUND', syscall: 'getaddrinfo' });
+	};
+	try {
+		await assert.rejects(
+			scrubber.scrubUserMessage({
+				scrubber: TEST_SCRUBBER,
+				history: [],
+				userMessage: 'My name is Pat and I live in Springfield.',
+				apiKey: 'sk-or-test',
+				clientSignal: new AbortController().signal
+			}),
+			(error) => {
+				assert.equal(error instanceof scrubber.ScrubberError, true);
+				assert.equal(error.code, 'scrub_unavailable');
+				assert.deepEqual(error.diagnostic.network, {
+					name: 'TypeError',
+					code: 'ENOTFOUND',
+					syscall: 'getaddrinfo',
+					causeName: 'Error'
+				});
+				const serialized = JSON.stringify(error.diagnostic);
+				assert.equal(serialized.includes('Springfield'), false);
+				assert.equal(serialized.includes('message'), false);
+				return true;
+			}
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('chat route emits one outcome event per turn carrying the generation ID', async () => {
+	const source = await readFile(
+		fileURLToPath(new URL('../src/routes/api/v2/chat/+server.ts', import.meta.url)),
+		'utf8'
+	);
+	for (const event of ['v2_turn_complete', 'v2_stream_failure', 'v2_stream_cancelled', 'v2_provider_start_failure']) {
+		assert.ok(source.includes(`'${event}'`), `${event} is emitted`);
+	}
+	// The shared turn context joins every stream-phase event to OpenRouter and
+	// to the transcript without carrying the turn text.
+	const context = source.slice(source.indexOf('const turnContext = ()'), source.indexOf('const logStreamFailure'));
+	for (const field of ['generationId', 'assistantMessageId', 'turnId', 'deltasDelivered', 'clientAborted', 'firstDeltaMs']) {
+		assert.ok(context.includes(field), `turn context includes ${field}`);
+	}
+	assert.equal(context.includes('assistantText'), false);
+	assert.equal(context.includes('canonicalUserMessage'), false);
+});
