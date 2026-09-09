@@ -14,7 +14,9 @@ import {
 	MAX_CONTEXT_UTF8_BYTES
 } from '$lib/server/v2/limits';
 import { openRouterSessionId } from '$lib/server/v2/crypto';
+import { loadtestPolicy } from '$lib/server/v2/loadtestStub';
 import { OpenRouterStartError, startOpenRouterStream } from '$lib/server/v2/openrouter';
+import { networkErrorDiagnostic } from '$lib/server/v2/providerDiagnostics';
 import { ScrubberError, scrubUserMessage } from '$lib/server/v2/scrubber';
 import { ChatRequestSchema } from '$lib/server/v2/schemas';
 import { effectiveMaxTurns, getStudyConfigRevision } from '$lib/server/v2/studyConfig';
@@ -36,6 +38,9 @@ function sse(event: 'meta' | 'delta' | 'done' | 'error', data: Record<string, un
 
 function validOpenRouterKey(value: string | undefined): string {
 	const key = value?.trim() ?? '';
+	// The load-test stub never contacts a provider, so a stubbed deployment may
+	// run with no OpenRouter credential at all (guaranteed zero model spend).
+	if (loadtestPolicy().stub) return 'loadtest-stub';
 	if (!key || /\s/.test(key) || key.length > 512) {
 		throw new V2HttpError(503, 'service_unavailable', 'The response service is unavailable');
 	}
@@ -43,6 +48,7 @@ function validOpenRouterKey(value: string | undefined): string {
 }
 
 export const POST: RequestHandler = async ({ request }) => {
+	const requestStartedAt = Date.now();
 	let secret: string;
 	try {
 		secret = signingKey(env.SESSION_SIGNING_KEY);
@@ -159,6 +165,9 @@ export const POST: RequestHandler = async ({ request }) => {
 							configVersion: config.configVersion,
 							code: error.code,
 							retryable: error.retryable,
+							upstreamStatus: error.diagnostic.upstreamStatus,
+							network: error.diagnostic.network,
+							clientAborted: request.signal.aborted,
 							scrubLatencyMs: Date.now() - scrubStartedAt
 						},
 						'v2 chat: redaction screen did not complete'
@@ -181,6 +190,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			}
 		}
 
+		const providerStartedAt = Date.now();
 		let providerStream;
 		try {
 			providerStream = await startOpenRouterStream({
@@ -203,12 +213,18 @@ export const POST: RequestHandler = async ({ request }) => {
 						configVersion: config.configVersion,
 						code: error.code,
 						status: error.status,
+						attempts: error.attempts,
+						phase: error.diagnostic.phase,
+						abortedBy: error.diagnostic.abortedBy,
+						network: error.diagnostic.network,
 						upstreamStatus: error.diagnostic.upstreamStatus,
 						upstreamCode: error.diagnostic.upstreamCode,
 						routingFailure: error.diagnostic.routingFailure,
 						requestedProviders: error.diagnostic.requestedProviders,
 						availableProviders: error.diagnostic.availableProviders,
-						retryable: error.retryable
+						retryable: error.retryable,
+						clientAborted: request.signal.aborted,
+						providerStartMs: Date.now() - providerStartedAt
 					},
 					'v2 chat: provider did not start'
 				);
@@ -223,16 +239,57 @@ export const POST: RequestHandler = async ({ request }) => {
 			}
 			throw error;
 		}
+		const providerStartMs = Date.now() - providerStartedAt;
+		const generationId = providerStream.generationId;
 
 		// A retry reuses the user turn ID but is a distinct assistant attempt. A
 		// fresh ID lets the transcript retain a superseded partial attempt and the
 		// later answer without duplicating either message ID.
 		const assistantMessageId = randomUUID();
 		let controllerClosed = false;
+		let assistantText = '';
+		let assistantCodePoints = 0;
+		let deltasDelivered = 0;
+		let firstDeltaAt: number | null = null;
+		let outcomeLogged = false;
+
+		// Shared context for every stream-phase log event, so one turn can be
+		// followed from provider start to its outcome and joined to OpenRouter
+		// through generationId. Identifiers only: never the turn text.
+		const turnContext = () => ({
+			condition: config.condition,
+			configVersion: config.configVersion,
+			sequence: body.sequence,
+			turnId: body.turn.id,
+			assistantMessageId,
+			generationId,
+			deltasDelivered,
+			partialCodePoints: assistantCodePoints,
+			providerStartMs,
+			firstDeltaMs: firstDeltaAt === null ? null : firstDeltaAt - providerStartedAt,
+			streamMs: Date.now() - providerStartedAt,
+			totalMs: Date.now() - requestStartedAt,
+			clientAborted: request.signal.aborted
+		});
+		const logStreamFailure = (code: string, extra: Record<string, unknown> = {}) => {
+			if (outcomeLogged) return;
+			outcomeLogged = true;
+			logger.warn(
+				{ event: 'v2_stream_failure', code, ...extra, ...turnContext() },
+				'v2 chat: answer stream did not complete'
+			);
+		};
+		const logTurnComplete = (finishReason: string, completionStatus: 'complete' | 'capped') => {
+			if (outcomeLogged) return;
+			outcomeLogged = true;
+			logger.info(
+				{ event: 'v2_turn_complete', finishReason, completionStatus, ...turnContext() },
+				'v2 chat: answer delivered'
+			);
+		};
+
 		const responseBody = new ReadableStream<Uint8Array>({
 			async start(controller) {
-				let assistantText = '';
-				let assistantCodePoints = 0;
 				const close = () => {
 					if (!controllerClosed) {
 						controllerClosed = true;
@@ -257,17 +314,20 @@ export const POST: RequestHandler = async ({ request }) => {
 					);
 					for await (const event of providerStream.events()) {
 						if (event.kind === 'delta') {
+							firstDeltaAt ??= Date.now();
 							const available = MAX_ASSISTANT_CODE_POINTS - assistantCodePoints;
 							const codePoints = Array.from(event.text);
 							const accepted = available > 0 ? codePoints.slice(0, available).join('') : '';
 							if (accepted) {
 								assistantText += accepted;
 								assistantCodePoints += Array.from(accepted).length;
+								deltasDelivered += 1;
 								controller.enqueue(sse('delta', { v: 2, text: accepted }));
 							}
 							if (codePoints.length > available) {
 								providerStream.cancel();
 								if (!assistantText) {
+									logStreamFailure('empty_response');
 									controller.enqueue(
 										sse('error', {
 											v: 2,
@@ -285,7 +345,16 @@ export const POST: RequestHandler = async ({ request }) => {
 									{ id: body.turn.id, role: 'user', content: canonicalUserMessage },
 									{ id: assistantMessageId, role: 'assistant', content: assistantText }
 								];
-								if (config.demo) void recordDemoTranscript(session, config, completedHistory);
+								logTurnComplete('application_limit', 'capped');
+								if (config.demo) {
+									void recordDemoTranscript(session, config, completedHistory, {
+										sequence: body.sequence,
+										assistantMessageId,
+										generationId,
+										finishReason: 'application_limit',
+										completionStatus: 'capped'
+									});
+								}
 								controller.enqueue(
 									sse('done', {
 										v: 2,
@@ -310,6 +379,7 @@ export const POST: RequestHandler = async ({ request }) => {
 							}
 						} else if (event.kind === 'done') {
 							if (!assistantText) {
+								logStreamFailure('empty_response', { finishReason: event.finishReason });
 								controller.enqueue(
 									sse('error', {
 										v: 2,
@@ -324,6 +394,7 @@ export const POST: RequestHandler = async ({ request }) => {
 							}
 							const finishReason = event.finishReason;
 							if (!['stop', 'length', 'content_filter'].includes(finishReason)) {
+								logStreamFailure('invalid_finish_reason', { finishReason });
 								controller.enqueue(
 									sse('error', {
 										v: 2,
@@ -341,12 +412,22 @@ export const POST: RequestHandler = async ({ request }) => {
 								return;
 							}
 							const capped = finishReason === 'length' || finishReason === 'content_filter';
+							const completionStatus = capped ? 'capped' : 'complete';
 							const completedHistory: HistoryMessage[] = [
 								...body.history,
 								{ id: body.turn.id, role: 'user', content: canonicalUserMessage },
 								{ id: assistantMessageId, role: 'assistant', content: assistantText }
 							];
-							if (config.demo) void recordDemoTranscript(session, config, completedHistory);
+							logTurnComplete(finishReason, completionStatus);
+							if (config.demo) {
+								void recordDemoTranscript(session, config, completedHistory, {
+									sequence: body.sequence,
+									assistantMessageId,
+									generationId,
+									finishReason,
+									completionStatus
+								});
+							}
 							controller.enqueue(
 								sse('done', {
 									v: 2,
@@ -355,7 +436,7 @@ export const POST: RequestHandler = async ({ request }) => {
 									assistantMessageId,
 									finishReason,
 									capped,
-									completionStatus: capped ? 'capped' : 'complete',
+									completionStatus,
 									historyTag: issueHistoryTag({
 										secret,
 										session,
@@ -367,6 +448,10 @@ export const POST: RequestHandler = async ({ request }) => {
 							close();
 							return;
 						} else {
+							// Provider-side end: an error payload from OpenRouter, an
+							// upstream EOF without finish_reason, or (with `cause`) a
+							// transport/timeout failure inside the relay.
+							logStreamFailure(event.code, { endedBy: 'provider', cause: event.cause });
 							controller.enqueue(
 								sse('error', {
 									v: 2,
@@ -384,8 +469,14 @@ export const POST: RequestHandler = async ({ request }) => {
 							return;
 						}
 					}
-				} catch {
-					logger.warn('v2 chat: response stream interrupted');
+				} catch (error) {
+					// Reached when the relay itself fails: enqueue on a closed
+					// controller after the client left, or a signing/serialization
+					// failure while emitting `done`.
+					logStreamFailure('stream_interrupted', {
+						endedBy: request.signal.aborted ? 'client' : 'relay',
+						error: networkErrorDiagnostic(error)
+					});
 					if (!controllerClosed) {
 						controller.enqueue(
 							sse('error', {
@@ -408,8 +499,18 @@ export const POST: RequestHandler = async ({ request }) => {
 				}
 			},
 			cancel() {
+				// The client closed the response (tab closed, navigation, network
+				// drop) before the answer finished. The provider stream is stopped
+				// so no further tokens are paid for.
 				controllerClosed = true;
 				providerStream.cancel();
+				if (!outcomeLogged) {
+					outcomeLogged = true;
+					logger.info(
+						{ event: 'v2_stream_cancelled', endedBy: 'client', ...turnContext() },
+						'v2 chat: client closed the answer stream'
+					);
+				}
 			}
 		});
 

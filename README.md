@@ -42,6 +42,24 @@ Every other variable can stay at its `.env.example` default for local work.
 Leave `ENABLE_V2_CHECKPOINT` and `ENABLE_LEGACY_V1` set to `false`: local runs
 then write to no Qualtrics tenant and keep the retired v1 routes closed.
 
+**Logging.** `LOG_LEVEL` (`fatal`…`trace`, or `silent`) sets server log
+verbosity; it defaults to `debug` on the dev server and `info` on Vercel. The
+value is read once per function instance, so on Vercel set it in the project
+environment and redeploy. Structured events worth searching for in Vercel logs:
+
+- `v2_turn_complete` (info): one per delivered answer, with the OpenRouter
+  `generationId`, `assistantMessageId`, finish reason, and timings. Look the
+  generation up at `https://openrouter.ai/api/v1/generation?id=<generationId>`
+  with the study key to see the model, provider route, tokens, and cost.
+- `v2_provider_start_failure` / `v2_scrub_failure` (warn): the provider call
+  did not start. `network` carries the underlying error name, `code`
+  (`ENOTFOUND`, `ECONNRESET`, `UND_ERR_CONNECT_TIMEOUT`, …), syscall, and
+  message; `abortedBy` says whether a timeout or the client cut it short.
+- `v2_stream_failure` (warn): the answer stream ended early. Includes how many
+  deltas and code points had been delivered, time since first byte, whether
+  the client had disconnected, and the provider-side `cause` when there is one.
+- `v2_stream_cancelled` (info): the client closed the response mid-answer.
+
 ### 3. Run
 
 ```sh

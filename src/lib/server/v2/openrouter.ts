@@ -1,3 +1,4 @@
+import { providerFetch } from './loadtestStub';
 import type { StudyConfig } from './studyConfig';
 import {
 	MAX_PROVIDER_SSE_EVENT_CHARS,
@@ -9,6 +10,7 @@ import {
 	OPENROUTER_RETRYABLE_STATUS_CODES,
 	OPENROUTER_STREAM_IDLE_TIMEOUT_MS
 } from './limits';
+import { networkErrorDiagnostic, type NetworkErrorDiagnostic } from './providerDiagnostics';
 import type { HistoryMessage } from './tokens';
 
 const RETRYABLE_STATUS = new Set<number>(OPENROUTER_RETRYABLE_STATUS_CODES);
@@ -16,13 +18,24 @@ const MAX_PROVIDER_ERROR_BODY_BYTES = 32_768;
 const MAX_PROVIDER_DIAGNOSTIC_ITEMS = 12;
 const SAFE_PROVIDER_TOKEN = /^[a-z0-9][a-z0-9._/-]{0,95}$/i;
 const SAFE_PROVIDER_ERROR_CODE = /^[a-z0-9][a-z0-9._/-]{0,63}$/i;
+const SAFE_GENERATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 type ProviderEvent =
 	| { kind: 'delta'; text: string }
 	| { kind: 'done'; finishReason: string }
-	| { kind: 'error'; code: string };
+	/** `cause` is present when a transport or timeout error, rather than a
+	 * provider-emitted error payload, ended the stream. Log-safe; see
+	 * providerDiagnostics.ts. */
+	| { kind: 'error'; code: string; cause?: NetworkErrorDiagnostic };
+
+/** Which deadline or party stopped a provider attempt. `none` means the fetch
+ * itself failed (DNS, TLS, connection reset) without any abort. */
+export type ProviderAbortedBy = 'first_byte_timeout' | 'hard_timeout' | 'client' | 'none';
 
 export class OpenRouterStartError extends Error {
+	/** Attempts made before this error was surfaced (set by the retry loop). */
+	attempts = 1;
+
 	constructor(
 		message: string,
 		public readonly status: number,
@@ -35,10 +48,43 @@ export class OpenRouterStartError extends Error {
 			routingFailure?: 'no_allowed_providers';
 			requestedProviders?: readonly string[];
 			availableProviders?: readonly string[];
+			/** `connect`: fetch() rejected before any response; `first_byte`: the
+			 * response started but failed before the first content delta. */
+			phase?: 'connect' | 'first_byte';
+			abortedBy?: ProviderAbortedBy;
+			network?: NetworkErrorDiagnostic;
 		}> = {}
 	) {
 		super(message);
 	}
+}
+
+function safeGenerationId(value: unknown): string | null {
+	return typeof value === 'string' && SAFE_GENERATION_ID.test(value) ? value : null;
+}
+
+/** OpenRouter stamps the generation ID on every streamed chunk as `id`; the
+ * response header is not guaranteed. Called only until an ID is found. */
+function payloadGenerationId(payload: string): string | null {
+	if (payload === '[DONE]') return null;
+	try {
+		const data: unknown = JSON.parse(payload);
+		if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+		return safeGenerationId((data as { id?: unknown }).id);
+	} catch {
+		return null;
+	}
+}
+
+function abortedBy(args: {
+	hardSignal: AbortSignal;
+	firstByteSignal: AbortSignal;
+	clientSignal: AbortSignal;
+}): ProviderAbortedBy {
+	if (args.clientSignal.aborted) return 'client';
+	if (args.hardSignal.aborted) return 'hard_timeout';
+	if (args.firstByteSignal.aborted) return 'first_byte_timeout';
+	return 'none';
 }
 
 async function boundedProviderErrorJson(response: Response): Promise<unknown> {
@@ -261,7 +307,7 @@ async function prepareAttempt(args: {
 	]);
 	let response: Response;
 	try {
-		response = await fetch(args.config.model.baseUrl, {
+		response = await providerFetch(args.config.model.baseUrl, {
 			method: 'POST',
 			headers: {
 				authorization: `Bearer ${args.apiKey}`,
@@ -296,14 +342,18 @@ async function prepareAttempt(args: {
 			}),
 			signal
 		});
-	} catch {
+	} catch (error) {
 		attemptAbort.abort();
 		const timeout = !args.hardSignal.aborted && !args.clientSignal.aborted;
+		// The generic fetch failure hides the useful part (DNS, TLS, reset,
+		// undici connect timeout) in `cause`; keep a sanitized copy for the log.
 		throw new OpenRouterStartError(
 			timeout ? 'Provider did not start in time' : 'Provider request was cancelled',
 			503,
 			timeout ? 'provider_start_timeout' : 'provider_unavailable',
-			timeout
+			timeout,
+			undefined,
+			{ phase: 'connect', abortedBy: abortedBy(args), network: networkErrorDiagnostic(error) }
 		);
 	}
 	if (!response.ok || !response.body) {
@@ -330,6 +380,7 @@ async function prepareAttempt(args: {
 	const decoder = new TextDecoder('utf-8', { fatal: true });
 	const parser = new SseDataParser();
 	const pending: ProviderEvent[] = [];
+	let generationId = safeGenerationId(response.headers.get('x-generation-id'));
 	try {
 		while (true) {
 			const result = await reader.read();
@@ -338,6 +389,7 @@ async function prepareAttempt(args: {
 			}
 			const payloads = parser.push(decoder.decode(result.value, { stream: true }));
 			for (const payload of payloads) {
+				generationId ??= payloadGenerationId(payload);
 				const events = parseProviderPayload(payload);
 				for (const event of events) {
 					const hasDelta = pending.some((candidate) => candidate.kind === 'delta');
@@ -357,7 +409,7 @@ async function prepareAttempt(args: {
 					parser,
 					pending,
 					abort: attemptAbort,
-					generationId: response.headers.get('x-generation-id')
+					generationId
 				};
 			}
 		}
@@ -370,7 +422,9 @@ async function prepareAttempt(args: {
 				'Provider returned an invalid stream',
 				503,
 				error.code,
-				true
+				true,
+				undefined,
+				{ phase: 'first_byte' }
 			);
 		}
 		const timeout = !args.hardSignal.aborted && !args.clientSignal.aborted;
@@ -378,7 +432,9 @@ async function prepareAttempt(args: {
 			timeout ? 'Provider did not start in time' : 'Provider request was cancelled',
 			503,
 			timeout ? 'provider_start_timeout' : 'provider_unavailable',
-			timeout
+			timeout,
+			undefined,
+			{ phase: 'first_byte', abortedBy: abortedBy(args), network: networkErrorDiagnostic(error) }
 		);
 	}
 }
@@ -429,7 +485,10 @@ export async function startOpenRouterStream(args: {
 			lastError =
 				error instanceof OpenRouterStartError
 					? error
-					: new OpenRouterStartError('Provider unavailable', 503, 'provider_unavailable', false);
+					: new OpenRouterStartError('Provider unavailable', 503, 'provider_unavailable', false, undefined, {
+							network: networkErrorDiagnostic(error)
+						});
+			lastError.attempts = attempt;
 			const shortRetryAfter =
 				lastError.retryAfterMs === undefined || lastError.retryAfterMs <= OPENROUTER_MAX_RETRY_AFTER_MS;
 			if (
@@ -502,6 +561,11 @@ export async function startOpenRouterStream(args: {
 				}
 			}
 		} catch (error) {
+			// Not a provider error payload: the socket dropped, a decoder or SSE
+			// bound tripped, the idle/hard deadline fired, or the client went
+			// away. The code stays coarse for the participant; `cause` carries
+			// the specifics (error name, ECONNRESET-style code, idle vs hard
+			// timeout message) to the route's v2_stream_failure log event.
 			yield {
 				kind: 'error',
 				code:
@@ -509,7 +573,8 @@ export async function startOpenRouterStream(args: {
 						? error.code
 						: hardAbort.signal.aborted
 							? 'model_timeout'
-							: 'stream_interrupted'
+							: 'stream_interrupted',
+				...(error instanceof ProviderStreamProtocolError ? {} : { cause: networkErrorDiagnostic(error) })
 			};
 		} finally {
 			clearTimeout(hardTimer);

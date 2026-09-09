@@ -1,4 +1,6 @@
+import { providerFetch } from './loadtestStub';
 import { MAX_USER_CODE_POINTS, OPENROUTER_RETRYABLE_STATUS_CODES } from './limits';
+import { networkErrorDiagnostic, type NetworkErrorDiagnostic } from './providerDiagnostics';
 import type { ScrubberConfig, ScrubberModel } from './studyConfig';
 import type { HistoryMessage } from './tokens';
 
@@ -30,7 +32,13 @@ export class ScrubberError extends Error {
 			| 'scrub_timeout'
 			| 'scrub_invalid_output'
 			| 'scrub_length',
-		public readonly retryable: boolean
+		public readonly retryable: boolean,
+		/** Transport specifics for scrub_unavailable/scrub_timeout. Names and
+		 * codes only (no free-form message), per this module's no-text rule. */
+		public readonly diagnostic: Readonly<{
+			network?: NetworkErrorDiagnostic;
+			upstreamStatus?: number;
+		}> = {}
 	) {
 		super(message);
 	}
@@ -306,7 +314,7 @@ async function attemptModel(args: {
 	try {
 		let response: Response;
 		try {
-			response = await fetch(args.model.baseUrl, {
+			response = await providerFetch(args.model.baseUrl, {
 				method: 'POST',
 				headers: {
 					authorization: `Bearer ${args.apiKey}`,
@@ -330,12 +338,13 @@ async function attemptModel(args: {
 				}),
 				signal: AbortSignal.any([timeoutAbort.signal, args.clientSignal])
 			});
-		} catch {
+		} catch (error) {
 			const timedOut = timeoutAbort.signal.aborted && !args.clientSignal.aborted;
 			throw new ScrubberError(
 				timedOut ? 'Redaction screen timed out' : 'Redaction screen request failed',
 				timedOut ? 'scrub_timeout' : 'scrub_unavailable',
-				true
+				true,
+				{ network: networkErrorDiagnostic(error, { includeMessage: false }) }
 			);
 		}
 		if (!response.ok) {
@@ -343,7 +352,8 @@ async function attemptModel(args: {
 			throw new ScrubberError(
 				`Redaction screen returned ${response.status}`,
 				'scrub_unavailable',
-				RETRYABLE_STATUS.has(response.status)
+				RETRYABLE_STATUS.has(response.status),
+				{ upstreamStatus: response.status }
 			);
 		}
 		const payload = await boundedJsonBody(response);
