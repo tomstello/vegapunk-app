@@ -19,6 +19,17 @@ const MAX_PROVIDER_DIAGNOSTIC_ITEMS = 12;
 const SAFE_PROVIDER_TOKEN = /^[a-z0-9][a-z0-9._/-]{0,95}$/i;
 const SAFE_PROVIDER_ERROR_CODE = /^[a-z0-9][a-z0-9._/-]{0,63}$/i;
 const SAFE_GENERATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+// Upstream statuses whose error text is about the account, not the request.
+const ACCOUNT_LEVEL_UPSTREAM_STATUS = new Set([402, 429]);
+const MAX_UPSTREAM_MESSAGE_CHARS = 300;
+const CREDENTIAL_SHAPES = /\b(?:sk-or-[A-Za-z0-9_-]+|Bearer\s+\S+)/g;
+
+function boundedUpstreamMessage(value: unknown): string | undefined {
+	if (typeof value !== 'string') return undefined;
+	const text = value.replace(CREDENTIAL_SHAPES, '[redacted]').replace(/\s+/g, ' ').trim();
+	if (!text) return undefined;
+	return text.length > MAX_UPSTREAM_MESSAGE_CHARS ? `${text.slice(0, MAX_UPSTREAM_MESSAGE_CHARS)}…` : text;
+}
 
 type ProviderEvent =
 	| { kind: 'delta'; text: string }
@@ -53,6 +64,12 @@ export class OpenRouterStartError extends Error {
 			phase?: 'connect' | 'first_byte';
 			abortedBy?: ProviderAbortedBy;
 			network?: NetworkErrorDiagnostic;
+			/** OpenRouter's own error text, kept only for billing (402) and
+			 * rate-limit (429) responses, which describe the account, never the
+			 * request content. Bounded and credential-redacted. The 402 form
+			 * ("requested up to N tokens but can only afford M") is the only
+			 * direct statement of OpenRouter's pre-flight credit hold. */
+			upstreamMessage?: string;
 		}> = {}
 	) {
 		super(message);
@@ -164,12 +181,16 @@ function providerErrorDiagnostic(
 				? metadata.available_providers
 				: undefined
 		) || /no allowed providers are available/i.test(message));
+	const upstreamMessage = ACCOUNT_LEVEL_UPSTREAM_STATUS.has(upstreamStatus)
+		? boundedUpstreamMessage(message)
+		: undefined;
 	return {
 		upstreamStatus,
 		...(upstreamCode ? { upstreamCode } : {}),
 		...(noAllowedProviders ? { routingFailure: 'no_allowed_providers' as const } : {}),
 		...(requestedProviders ? { requestedProviders } : {}),
-		...(availableProviders ? { availableProviders } : {})
+		...(availableProviders ? { availableProviders } : {}),
+		...(upstreamMessage ? { upstreamMessage } : {})
 	};
 }
 

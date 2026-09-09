@@ -414,6 +414,59 @@ test('configuration hash covers runtime limits, retries, and deadlines', () => {
 	);
 });
 
+test('402 and 429 bodies keep a bounded upstream message; other statuses keep none', async () => {
+	const originalFetch = globalThis.fetch;
+	const start = () =>
+		openrouter.startOpenRouterStream({
+			config: configs.getStudyConfig('flu'),
+			history: [],
+			userMessage: 'Is it safe?',
+			providerSessionId: SESSION_ID,
+			apiKey: 'sk-or-test',
+			clientSignal: new AbortController().signal
+		});
+	const errorFor = async (status, message) => {
+		globalThis.fetch = async () =>
+			new Response(JSON.stringify({ error: { code: status, message } }), {
+				status,
+				headers: { 'content-type': 'application/json', 'retry-after': '0' }
+			});
+		let caught;
+		await start().catch((error) => {
+			caught = error;
+		});
+		assert.ok(caught instanceof openrouter.OpenRouterStartError);
+		return caught;
+	};
+	try {
+		const insufficient = await errorFor(
+			402,
+			'This request requires more credits, or fewer max_tokens. You requested up to 6000 tokens, but can only afford 4113. Bearer sk-or-v1-secret'
+		);
+		assert.equal(insufficient.code, 'provider_unavailable');
+		assert.equal(insufficient.diagnostic.upstreamStatus, 402);
+		assert.equal(
+			insufficient.diagnostic.upstreamMessage,
+			'This request requires more credits, or fewer max_tokens. You requested up to 6000 tokens, but can only afford 4113. [redacted]'
+		);
+
+		const limited = await errorFor(429, 'Rate limit exceeded: free-models-per-min');
+		assert.equal(limited.code, 'provider_busy');
+		assert.equal(limited.diagnostic.upstreamMessage, 'Rate limit exceeded: free-models-per-min');
+
+		// A validation-style error could in principle quote the request, so its
+		// text is never retained.
+		const rejected = await errorFor(400, 'Invalid request: messages[3].content contains something');
+		assert.equal(rejected.diagnostic.upstreamStatus, 400);
+		assert.equal('upstreamMessage' in rejected.diagnostic, false);
+
+		const long = await errorFor(402, 'x'.repeat(1_000));
+		assert.equal(long.diagnostic.upstreamMessage.length, 301);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
 test('v11 sends max_tokens on the answer call; v10 and earlier send none', async () => {
 	const originalFetch = globalThis.fetch;
 	const bodies = [];
