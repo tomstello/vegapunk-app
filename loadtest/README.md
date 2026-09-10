@@ -87,6 +87,21 @@ many are still running. This is what an SMS wave looks like; use it for the
 users take longer; a lower value packs more chat streams into the same
 concurrency.
 
+`--max-failures <n>` is the stop switch. Once more than n conversations have
+failed, no new conversation starts and no conversation starts another turn;
+requests already open drain (seconds, bounded by `--timeout`), then the
+summary and results file are written as usual, with `meta.stop` recording
+why and when. Ctrl-C once does the same; Ctrl-C twice aborts without
+results. Exit code 0 means the run completed, 3 means it stopped early with
+results written, 130 means it was aborted. Use it on every live-model run: a run that has started failing is
+spending money for nothing, and before this switch existed the only way to
+stop one was to kill it and lose the per-turn data.
+
+With `OPENROUTER_API_KEY` exported, the harness reads the account balance
+from openrouter.ai before and after the run and records it under
+`meta.credits` with the spend per successful turn. That is the only call
+the harness makes outside the load-test host.
+
 `--questions short|long` picks the user-turn text. Against the stub it
 makes no difference. Against the live model it sets answer length and
 therefore spend: the system prompt asks for thorough answers with sources,

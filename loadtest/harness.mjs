@@ -61,6 +61,15 @@ if (args.help === 'true') {
   --bucket <seconds>      Timeline bucket width (default 5)
   --label <name>          Run label; also names the results file
   --out <path>            Results JSON path (default loadtest/results/<label>.json)
+  --max-failures <n>      Stop launching conversations and turns once more than n
+                          conversations have failed; in-flight requests drain and
+                          results are still written (default: no limit)
+
+Ctrl-C once stops the same way (drain, then write results). Ctrl-C twice
+aborts immediately without results. Exit code 0 = ran to completion,
+3 = stopped early with results written, 130 = aborted. If OPENROUTER_API_KEY is set in the
+environment, the account's credit balance is read from openrouter.ai before
+and after the run and recorded under meta.credits.
 `);
 	process.exit(0);
 }
@@ -87,6 +96,11 @@ const TIMEOUT_MS = integer(args.timeout, 200_000);
 const BUCKET_SECONDS = Math.max(1, integer(args.bucket, 5));
 const LABEL = args.label ?? new Date().toISOString().replace(/[:.]/g, '-');
 const OUT = args.out ?? resolve(HERE, 'results', `${LABEL}.json`);
+const MAX_FAILURES = args['max-failures'] === undefined ? null : integer(args['max-failures'], NaN);
+if (MAX_FAILURES !== null && !(MAX_FAILURES >= 0)) {
+	console.error('--max-failures must be a non-negative integer');
+	process.exit(2);
+}
 
 const ALLOWED_HOST =
 	/^(localhost|127\.0\.0\.1|vaccine-chat-loadtest\.vercel\.app|vaccine-chat-loadtest-[a-z0-9-]+\.vercel\.app)$/;
@@ -293,6 +307,65 @@ let conversationsStarted = 0;
 let conversationsFinished = 0;
 let conversationsFailed = 0;
 
+// --- Stop switch -----------------------------------------------------------------
+// A run that is failing spends money for nothing, and a killed run loses its
+// results file. Once a stop is requested, no new conversation starts and no
+// conversation starts another turn; requests already open drain naturally
+// (answer streams last seconds, bounded by --timeout), then the summary and
+// results are written as usual. Triggered by --max-failures or by Ctrl-C.
+
+let stopReason = null;
+let stopAtMs = null;
+
+function requestStop(reason) {
+	if (stopReason) return;
+	stopReason = reason;
+	stopAtMs = Math.round(elapsedMs());
+	console.error(
+		`\n[t=${Math.round(stopAtMs / 1000)}s] STOP (${reason}): no new conversations or turns; ` +
+			`draining ${requestsInFlight} in-flight requests, then writing results`
+	);
+}
+
+process.on('SIGINT', () => {
+	if (stopReason) {
+		console.error('\nsecond interrupt: aborting without results');
+		process.exit(130);
+	}
+	requestStop('interrupt');
+	console.error('(press Ctrl-C again to abort without results)');
+});
+
+// --- Credits readout -------------------------------------------------------------
+// Optional: with OPENROUTER_API_KEY in the environment, the account balance is
+// read before and after the run so spend is recorded with the results. This is
+// the one call the harness makes outside the load-test host; it is a read of
+// the account, not traffic to the app or a provider.
+
+async function readCredits() {
+	const key = process.env.OPENROUTER_API_KEY?.trim();
+	if (!key) return null;
+	try {
+		const response = await fetch('https://openrouter.ai/api/v1/credits', {
+			headers: { authorization: `Bearer ${key}` },
+			signal: AbortSignal.timeout(10_000)
+		});
+		if (!response.ok) return { error: `http_${response.status}` };
+		const data = (await response.json())?.data;
+		if (typeof data?.total_credits !== 'number' || typeof data?.total_usage !== 'number') {
+			return { error: 'unexpected_shape' };
+		}
+		return {
+			totalCredits: data.total_credits,
+			totalUsage: data.total_usage,
+			balance: Math.round((data.total_credits - data.total_usage) * 100) / 100,
+			readAt: new Date().toISOString()
+		};
+	} catch (error) {
+		return { error: String(error?.cause?.code ?? error?.name ?? error).slice(0, 80) };
+	}
+}
+
 async function conversation(index) {
 	const record = {
 		index,
@@ -344,6 +417,11 @@ async function conversation(index) {
 		let historyTag = session.historyTag;
 		for (let sequence = 1; sequence <= TURNS; sequence += 1) {
 			if (sequence > 1 && THINK_MS > 0) await sleep(jitter(THINK_MS));
+			if (sequence > 1 && stopReason) {
+				// Ends cleanly with the turns completed so far; not a failure.
+				record.stopped = stopReason;
+				break;
+			}
 			const turnId = uuid();
 			const userMessage = QUESTIONS[(index + sequence) % QUESTIONS.length];
 			const turn = { seq: sequence, startedMs: Math.round(elapsedMs()) };
@@ -415,7 +493,12 @@ async function conversation(index) {
 	} finally {
 		record.endedMs = Math.round(elapsedMs());
 		conversationsFinished += 1;
-		if (record.error) conversationsFailed += 1;
+		if (record.error) {
+			conversationsFailed += 1;
+			if (MAX_FAILURES !== null && conversationsFailed > MAX_FAILURES) {
+				requestStop(`max_failures (${conversationsFailed} > ${MAX_FAILURES})`);
+			}
+		}
 	}
 }
 
@@ -427,7 +510,7 @@ async function runClosedLoop(results) {
 	await Promise.all(
 		Array.from({ length: workers }, async (_, worker) => {
 			if (RAMP_SECONDS > 0) await sleep((worker * RAMP_SECONDS * 1_000) / workers);
-			while (next < N) {
+			while (next < N && !stopReason) {
 				const index = next;
 				next += 1;
 				results[index] = await conversation(index);
@@ -441,6 +524,7 @@ async function runOpenLoop(results) {
 	const pending = [];
 	const startedAt = performance.now();
 	for (let index = 0; index < N; index += 1) {
+		if (stopReason) break;
 		pending.push(
 			conversation(index).then((record) => {
 				results[index] = record;
@@ -678,6 +762,8 @@ function printSummary(summary, rows) {
 // --- Main ------------------------------------------------------------------------
 
 const results = new Array(N);
+const creditsBefore = await readCredits();
+if (creditsBefore?.balance !== undefined) console.error(`credits before: $${creditsBefore.balance.toFixed(2)}`);
 const progress = setInterval(() => {
 	const g = sampleGenerator();
 	console.error(
@@ -698,6 +784,32 @@ const summary = summarize(results);
 const rows = timeline(results);
 printSummary(summary, rows);
 
+const creditsAfter = await readCredits();
+const credits =
+	creditsBefore || creditsAfter
+		? {
+				before: creditsBefore,
+				after: creditsAfter,
+				spent:
+					creditsBefore?.balance !== undefined && creditsAfter?.balance !== undefined
+						? Math.round((creditsBefore.balance - creditsAfter.balance) * 100) / 100
+						: null
+			}
+		: null;
+if (credits?.spent !== null && credits?.spent !== undefined) {
+	const okTurns = summary.chat.ok || 0;
+	console.log(
+		`credits: $${creditsBefore.balance.toFixed(2)} -> $${creditsAfter.balance.toFixed(2)}  spent $${credits.spent.toFixed(2)}` +
+			(okTurns ? `  ($${(credits.spent / okTurns).toFixed(4)} per successful turn)` : '')
+	);
+}
+if (stopReason) {
+	console.log(
+		`stopped early: ${stopReason} at t=${Math.round(stopAtMs / 1000)}s; ` +
+			`${conversationsStarted} of ${N} conversations started, ${results.filter((r) => r?.stopped).length} cut short`
+	);
+}
+
 const report = {
 	meta: {
 		label: LABEL,
@@ -711,6 +823,11 @@ const report = {
 		thinkMs: THINK_MS,
 		page: PAGE,
 		mode: RATE ? { openLoop: true, ratePerSecond: RATE } : { closedLoop: true, concurrency: CONCURRENCY, rampSeconds: RAMP_SECONDS },
+		maxFailures: MAX_FAILURES,
+		stop: stopReason
+			? { reason: stopReason, atSeconds: Math.round(stopAtMs / 100) / 10, conversationsStarted, conversationsCutShort: results.filter((r) => r?.stopped).length }
+			: null,
+		credits,
 		node: process.version
 	},
 	summary,
@@ -722,3 +839,6 @@ const report = {
 await mkdir(dirname(OUT), { recursive: true });
 await writeFile(OUT, JSON.stringify(report, null, 2));
 console.log(`\nresults written to ${OUT}`);
+// 0: ran to completion. 3: stopped early by --max-failures or Ctrl-C, with
+// results written. (A second Ctrl-C exits 130 without results.)
+process.exitCode = stopReason ? 3 : 0;
