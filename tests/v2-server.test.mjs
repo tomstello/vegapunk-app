@@ -425,11 +425,11 @@ test('402 and 429 bodies keep a bounded upstream message; other statuses keep no
 			apiKey: 'sk-or-test',
 			clientSignal: new AbortController().signal
 		});
-	const errorFor = async (status, message) => {
+	const errorFor = async (status, message, extraHeaders = {}) => {
 		globalThis.fetch = async () =>
 			new Response(JSON.stringify({ error: { code: status, message } }), {
 				status,
-				headers: { 'content-type': 'application/json', 'retry-after': '0' }
+				headers: { 'content-type': 'application/json', 'retry-after': '0', ...extraHeaders }
 			});
 		let caught;
 		await start().catch((error) => {
@@ -462,6 +462,44 @@ test('402 and 429 bodies keep a bounded upstream message; other statuses keep no
 
 		const long = await errorFor(402, 'x'.repeat(1_000));
 		assert.equal(long.diagnostic.upstreamMessage.length, 301);
+
+		// Rate-limit headers are kept on 402/429 (values validated), never on
+		// other statuses, and absent when the response carries none.
+		assert.deepEqual(insufficient.diagnostic.upstreamHeaders, { 'retry-after': '0' });
+		const withLimits = await errorFor(429, 'Rate limited', {
+			'x-ratelimit-limit': '200',
+			'x-ratelimit-remaining': '0',
+			'x-ratelimit-reset': '1789069400',
+			'x-ratelimit-bogus': 'ignored',
+			'retry-after': 'Thu, 10 Sep 2026 19:42:00 GMT'
+		});
+		assert.deepEqual(withLimits.diagnostic.upstreamHeaders, {
+			'retry-after': 'Thu, 10 Sep 2026 19:42:00 GMT',
+			'x-ratelimit-limit': '200',
+			'x-ratelimit-remaining': '0',
+			'x-ratelimit-reset': '1789069400'
+		});
+		const odd = await errorFor(402, 'no credits', { 'x-ratelimit-limit': '<script>alert(1)</script>' });
+		assert.deepEqual(odd.diagnostic.upstreamHeaders, { 'retry-after': '0' });
+		assert.equal('upstreamHeaders' in rejected.diagnostic, false);
+		globalThis.fetch = async () =>
+			new Response(JSON.stringify({ error: { code: 402, message: 'no credits' } }), {
+				status: 402,
+				headers: { 'content-type': 'application/json' }
+			});
+		let bareHeaders;
+		await start().catch((error) => {
+			bareHeaders = error;
+		});
+		assert.equal('upstreamHeaders' in bareHeaders.diagnostic, false);
+		// A 402 with no JSON body still records status and headers.
+		globalThis.fetch = async () => new Response('Payment Required', { status: 402, headers: { 'retry-after': '2' } });
+		let noBody;
+		await start().catch((error) => {
+			noBody = error;
+		});
+		assert.equal(noBody.diagnostic.upstreamStatus, 402);
+		assert.deepEqual(noBody.diagnostic.upstreamHeaders, { 'retry-after': '2' });
 	} finally {
 		globalThis.fetch = originalFetch;
 	}

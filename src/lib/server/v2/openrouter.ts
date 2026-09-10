@@ -24,6 +24,23 @@ const ACCOUNT_LEVEL_UPSTREAM_STATUS = new Set([402, 429]);
 const MAX_UPSTREAM_MESSAGE_CHARS = 300;
 const CREDENTIAL_SHAPES = /\b(?:sk-or-[A-Za-z0-9_-]+|Bearer\s+\S+)/g;
 
+const ACCOUNT_LEVEL_HEADERS = ['retry-after', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset'] as const;
+// Numbers, ISO/HTTP dates, and simple tokens; nothing else is expected here.
+const SAFE_HEADER_VALUE = /^[A-Za-z0-9 .:,_/+-]{1,64}$/;
+
+function accountLevelHeaders(
+	upstreamStatus: number,
+	headers: Headers
+): Readonly<Record<string, string>> | undefined {
+	if (!ACCOUNT_LEVEL_UPSTREAM_STATUS.has(upstreamStatus)) return undefined;
+	const captured: Record<string, string> = {};
+	for (const name of ACCOUNT_LEVEL_HEADERS) {
+		const value = headers.get(name)?.trim();
+		if (value && SAFE_HEADER_VALUE.test(value)) captured[name] = value;
+	}
+	return Object.keys(captured).length > 0 ? Object.freeze(captured) : undefined;
+}
+
 function boundedUpstreamMessage(value: unknown): string | undefined {
 	if (typeof value !== 'string') return undefined;
 	const text = value.replace(CREDENTIAL_SHAPES, '[redacted]').replace(/\s+/g, ' ').trim();
@@ -70,6 +87,11 @@ export class OpenRouterStartError extends Error {
 			 * ("requested up to N tokens but can only afford M") is the only
 			 * direct statement of OpenRouter's pre-flight credit hold. */
 			upstreamMessage?: string;
+			/** Rate-limit and retry headers from a 402/429 response, when
+			 * present: retry-after and x-ratelimit-limit/remaining/reset. These
+			 * are the only documented place OpenRouter reports limit state, and
+			 * whether the in-flight credit guard sets them is unknown. */
+			upstreamHeaders?: Readonly<Record<string, string>>;
 		}> = {}
 	) {
 		super(message);
@@ -152,11 +174,14 @@ function safeProviderList(value: unknown): readonly string[] | undefined {
 
 function providerErrorDiagnostic(
 	upstreamStatus: number,
-	payload: unknown
+	payload: unknown,
+	headers: Headers
 ): OpenRouterStartError['diagnostic'] {
-	if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { upstreamStatus };
+	const upstreamHeaders = accountLevelHeaders(upstreamStatus, headers);
+	const bare = { upstreamStatus, ...(upstreamHeaders ? { upstreamHeaders } : {}) };
+	if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return bare;
 	const error = 'error' in payload ? payload.error : undefined;
-	if (!error || typeof error !== 'object' || Array.isArray(error)) return { upstreamStatus };
+	if (!error || typeof error !== 'object' || Array.isArray(error)) return bare;
 	const rawCode = 'code' in error ? error.code : undefined;
 	const codeString = typeof rawCode === 'number' ? String(rawCode) : rawCode;
 	const upstreamCode =
@@ -190,7 +215,8 @@ function providerErrorDiagnostic(
 		...(noAllowedProviders ? { routingFailure: 'no_allowed_providers' as const } : {}),
 		...(requestedProviders ? { requestedProviders } : {}),
 		...(availableProviders ? { availableProviders } : {}),
-		...(upstreamMessage ? { upstreamMessage } : {})
+		...(upstreamMessage ? { upstreamMessage } : {}),
+		...(upstreamHeaders ? { upstreamHeaders } : {})
 	};
 }
 
@@ -382,7 +408,7 @@ async function prepareAttempt(args: {
 	}
 	if (!response.ok || !response.body) {
 		const payload = await boundedProviderErrorJson(response);
-		const diagnostic = providerErrorDiagnostic(response.status, payload);
+		const diagnostic = providerErrorDiagnostic(response.status, payload, response.headers);
 		attemptAbort.abort();
 		const routingFailure = diagnostic.routingFailure === 'no_allowed_providers';
 		const retryable = !routingFailure && RETRYABLE_STATUS.has(response.status);

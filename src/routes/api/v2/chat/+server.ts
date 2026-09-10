@@ -220,6 +220,7 @@ export const POST: RequestHandler = async ({ request }) => {
 						upstreamStatus: error.diagnostic.upstreamStatus,
 						upstreamCode: error.diagnostic.upstreamCode,
 						upstreamMessage: error.diagnostic.upstreamMessage,
+						upstreamHeaders: error.diagnostic.upstreamHeaders,
 						routingFailure: error.diagnostic.routingFailure,
 						requestedProviders: error.diagnostic.requestedProviders,
 						availableProviders: error.diagnostic.availableProviders,
