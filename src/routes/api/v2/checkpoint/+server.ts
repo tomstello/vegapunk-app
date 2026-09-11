@@ -1,6 +1,12 @@
 import { env } from '$env/dynamic/private';
 import { logger } from '$lib/logger';
 import {
+	CheckpointStoreError,
+	selectCheckpointStore,
+	type CheckpointSnapshot,
+	type CheckpointStoreKind
+} from '$lib/server/v2/checkpointStore';
+import {
 	bearerToken,
 	errorResponse,
 	jsonResponse,
@@ -13,16 +19,22 @@ import {
 	checkpointEmbeddedData,
 	createQualtricsCheckpoint,
 	getQualtricsCheckpointConfig,
-	QualtricsCheckpointError,
+	isQualtricsResponseId,
 	updateQualtricsCheckpoint
 } from '$lib/server/v2/qualtricsCheckpoint';
+import {
+	checkpointObject,
+	getS3CheckpointConfig,
+	putCheckpointObject
+} from '$lib/server/v2/s3Checkpoint';
 import { CheckpointRequestSchema, validateTranscriptSnapshot } from '$lib/server/v2/schemas';
 import { getStudyConfigRevision } from '$lib/server/v2/studyConfig';
 import {
 	issueCheckpointHandle,
 	signingKey,
 	verifyCheckpointHandle,
-	verifySessionToken
+	verifySessionToken,
+	type CheckpointHandleClaims
 } from '$lib/server/v2/tokens';
 import type { RequestHandler } from './$types';
 
@@ -35,6 +47,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		return errorResponse(new V2HttpError(503, 'checkpoint_unavailable', 'Transcript backup is unavailable'));
 	}
 
+	let store: CheckpointStoreKind | 'unselected' = 'unselected';
 	try {
 		let session;
 		try {
@@ -42,14 +55,14 @@ export const POST: RequestHandler = async ({ request }) => {
 		} catch {
 			throw new V2HttpError(401, 'invalid_session', 'The study session is invalid or expired');
 		}
-			const config = getStudyConfigRevision(
-				session.condition,
-				session.configVersion,
-				session.configHash
-			);
-			if (!config) {
-				throw new V2HttpError(409, 'config_revision_unavailable', 'The saved chat configuration is unavailable');
-			}
+		const config = getStudyConfigRevision(
+			session.condition,
+			session.configVersion,
+			session.configHash
+		);
+		if (!config) {
+			throw new V2HttpError(409, 'config_revision_unavailable', 'The saved chat configuration is unavailable');
+		}
 		const body = parseWithSchema(
 			CheckpointRequestSchema,
 			await readJsonWithByteLimit(request, MAX_CHECKPOINT_REQUEST_BYTES)
@@ -74,21 +87,19 @@ export const POST: RequestHandler = async ({ request }) => {
 				error instanceof Error ? error.message : 'Transcript snapshot is invalid'
 			);
 		}
-		const checkpoint = checkpointEmbeddedData({
-			session,
-			snapshot: {
-				createOperationId: body.createOperationId,
-				snapshotSequence: body.snapshotSequence,
-				state: body.state,
-				reasonHint: body.reasonHint,
-				transcriptJson: body.transcriptJson
-			}
-		});
-		const qualtrics = getQualtricsCheckpointConfig();
-		let checkpointResponseId: string;
-		const operation = body.checkpointHandle ? 'update' : 'create';
+		const snapshot: CheckpointSnapshot = {
+			createOperationId: body.createOperationId,
+			snapshotSequence: body.snapshotSequence,
+			state: body.state,
+			reasonHint: body.reasonHint,
+			transcriptJson: body.transcriptJson
+		};
+		store = selectCheckpointStore();
+
+		// The handle guards sequence monotonicity and stream identity for both
+		// stores. It is verified before any upstream write regardless of store.
+		let handle: CheckpointHandleClaims | null = null;
 		if (body.checkpointHandle) {
-			let handle;
 			try {
 				handle = verifyCheckpointHandle({ token: body.checkpointHandle, secret, session });
 			} catch {
@@ -100,31 +111,55 @@ export const POST: RequestHandler = async ({ request }) => {
 			if (body.snapshotSequence <= handle.acknowledgedSequence) {
 				throw new V2HttpError(409, 'stale_checkpoint', 'Checkpoint revision is not newer than the acknowledged revision');
 			}
-			checkpointResponseId = handle.checkpointResponseId;
-			await updateQualtricsCheckpoint({
-				config: qualtrics,
-				checkpointResponseId,
-				fields: checkpoint.fields
-			});
+		}
+		const operation = handle ? 'update' : 'create';
+
+		let storeRef: string;
+		let checksum: string;
+		let attempts = 1;
+		if (store === 's3') {
+			const s3 = getS3CheckpointConfig();
+			const object = checkpointObject({ session, snapshot });
+			const result = await putCheckpointObject({ config: s3, object });
+			storeRef = object.streamRef;
+			checksum = object.checksum;
+			attempts = result.attempts;
 		} else {
-			checkpointResponseId = await createQualtricsCheckpoint({
-				config: qualtrics,
-				fields: checkpoint.fields,
-				idempotencyKey: body.createOperationId
-			});
+			const checkpoint = checkpointEmbeddedData({ session, snapshot });
+			const qualtrics = getQualtricsCheckpointConfig();
+			checksum = checkpoint.checksum;
+			// A handle sealed while CHECKPOINT_STORE was "s3" carries an object
+			// prefix, not a Qualtrics response ID. After a rollback to Qualtrics
+			// such a stream starts a fresh response rather than failing forever.
+			if (handle && isQualtricsResponseId(handle.checkpointResponseId)) {
+				storeRef = handle.checkpointResponseId;
+				await updateQualtricsCheckpoint({
+					config: qualtrics,
+					checkpointResponseId: storeRef,
+					fields: checkpoint.fields
+				});
+			} else {
+				storeRef = await createQualtricsCheckpoint({
+					config: qualtrics,
+					fields: checkpoint.fields,
+					idempotencyKey: body.createOperationId
+				});
+			}
 		}
 		const checkpointHandle = issueCheckpointHandle({
 			secret,
 			session,
-			checkpointResponseId,
+			checkpointResponseId: storeRef,
 			createOperationId: body.createOperationId,
 			acknowledgedSequence: body.snapshotSequence,
-			acknowledgedChecksum: checkpoint.checksum
+			acknowledgedChecksum: checksum
 		});
 		logger.info(
 			{
 				event: operation === 'create' ? 'v2_checkpoint_create_ok' : 'v2_checkpoint_update_ok',
 				operation,
+				store,
+				attempts,
 				condition: session.condition,
 				configVersion: session.configVersion
 			},
@@ -134,21 +169,26 @@ export const POST: RequestHandler = async ({ request }) => {
 			v: 2,
 			checkpointHandle,
 			acknowledgedSequence: body.snapshotSequence,
-			checksum: checkpoint.checksum
+			checksum
 		});
 	} catch (error) {
-		if (error instanceof QualtricsCheckpointError) {
-			logger.warn(
-				{
-					event: error.ambiguousCreate
-						? 'v2_checkpoint_ambiguous_create'
-						: 'v2_checkpoint_upstream_failure',
-					code: error.code,
-					status: error.status,
-					ambiguousCreate: error.ambiguousCreate
-				},
-				'v2 checkpoint: Qualtrics operation failed'
-			);
+		if (error instanceof CheckpointStoreError) {
+			const fields = {
+				event: error.ambiguousCreate
+					? 'v2_checkpoint_ambiguous_create'
+					: 'v2_checkpoint_upstream_failure',
+				code: error.code,
+				status: error.status,
+				store,
+				attempts: error.attempts,
+				upstream: error.upstreamName,
+				ambiguousCreate: error.ambiguousCreate
+			};
+			if (error.code === 'checkpoint_unavailable') {
+				logger.error(fields, 'v2 checkpoint: store is not configured or refused the writer');
+			} else {
+				logger.warn(fields, 'v2 checkpoint: store operation failed');
+			}
 			return jsonResponse(
 				{
 					v: 2,

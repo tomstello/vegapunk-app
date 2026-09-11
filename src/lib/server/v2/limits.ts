@@ -33,10 +33,16 @@ export const OPENROUTER_MAX_RETRY_AFTER_MS = 5_000;
 export const OPENROUTER_DEFAULT_RETRY_DELAY_MS = 500;
 export const OPENROUTER_RETRYABLE_STATUS_CODES = Object.freeze([429, 500, 502, 503, 504] as const);
 export const MAX_PROVIDER_SSE_EVENT_CHARS = 65_536;
-export const QUALTRICS_TIMEOUT_MS = 20_000;
+// Per-attempt upstream deadline for the checkpoint store (Qualtrics or S3).
+// The browser's 75-second request timeout and 120-second lease guard are sized
+// around this value; change them together.
+export const CHECKPOINT_UPSTREAM_TIMEOUT_MS = 20_000;
 
 // This object is part of every study configuration hash. Keep it JSON-only and
 // version substantive policy changes through the corresponding configVersion.
+// The checkpointChunk* and checkpointUpstream* entries describe the legacy
+// Qualtrics writer; they stay at these values under the S3 writer too, because
+// changing them would re-hash every issued session's configuration.
 export const V2_RUNTIME_POLICY = Object.freeze({
 	protocolVersion: V2_PROTOCOL_VERSION,
 	sessionTtlSeconds: SESSION_TTL_SECONDS,
@@ -64,6 +70,6 @@ export const V2_RUNTIME_POLICY = Object.freeze({
 	providerDefaultRetryDelayMs: OPENROUTER_DEFAULT_RETRY_DELAY_MS,
 	providerRetryableStatusCodes: OPENROUTER_RETRYABLE_STATUS_CODES,
 	maxProviderSseEventChars: MAX_PROVIDER_SSE_EVENT_CHARS,
-	checkpointUpstreamTimeoutMs: QUALTRICS_TIMEOUT_MS,
+	checkpointUpstreamTimeoutMs: CHECKPOINT_UPSTREAM_TIMEOUT_MS,
 	checkpointUpstreamMaxAttempts: 1
 });
