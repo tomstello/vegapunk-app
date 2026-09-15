@@ -20,7 +20,10 @@ export const CONFIG_VERSIONS: Record<StudyCondition, string> = {
 	flu: "albertsons-2026-flu-v10",
 	covid: "albertsons-2026-covid-v10",
 	combo: "albertsons-2026-combo-v10",
-	demo: "vaccine-chat-demo-v1",
+	// The standalone demo has no survey to name its revision, so this must track
+	// the server's active demo config (studyConfig.ts) or every demo session
+	// fails the version check before the chat starts.
+	demo: "vaccine-chat-demo-v2",
 };
 
 export const DEFAULT_UI: PublicUiConfig = {
