@@ -1246,6 +1246,33 @@ test('S3 checkpoint writes retry once on transient failures and never on configu
 	);
 	assert.equal(calls, 1);
 
+	// A denied STS assumption that only surfaces after the abort timer fired is
+	// still a configuration failure: one attempt, AWS's own message kept.
+	calls = 0;
+	const slowDenial = {
+		send: (_command, options) =>
+			new Promise((_resolve, reject) => {
+				calls += 1;
+				options.abortSignal.addEventListener('abort', () =>
+					reject(
+						Object.assign(new Error('User: arn:aws:sts::123456789012:assumed-role/x is not authorized to perform: sts:AssumeRoleWithWebIdentity'), {
+							name: 'AccessDenied',
+							$metadata: { httpStatusCode: 403 }
+						})
+					)
+				);
+			})
+	};
+	await assert.rejects(
+		s3.putCheckpointObject({ config, object, client: slowDenial, timeoutMs: 10, retryDelayMs: noDelay }),
+		(error) =>
+			error.code === 'checkpoint_unavailable' &&
+			error.attempts === 1 &&
+			error.upstreamName === 'AccessDenied' &&
+			error.upstreamMessage.includes('sts:AssumeRoleWithWebIdentity')
+	);
+	assert.equal(calls, 1);
+
 	calls = 0;
 	const noCredentials = {
 		send: async () => {

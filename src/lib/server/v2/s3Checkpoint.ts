@@ -257,6 +257,16 @@ const NETWORK_ERROR_CODES = new Set([
 
 type Classified = { error: CheckpointStoreError; retry: boolean };
 
+// AWS error messages for configuration failures ("Not authorized to perform
+// sts:AssumeRoleWithWebIdentity", "Access Denied", "The specified bucket does
+// not exist") name the failing side and carry no participant content. They are
+// kept, bounded, for the operator log; every other class keeps none.
+function boundedUpstreamMessage(raw: unknown): string | undefined {
+	const message = (raw as { message?: unknown } | null)?.message;
+	if (typeof message !== 'string' || message.length === 0) return undefined;
+	return message.replace(/\s+/g, ' ').slice(0, 240);
+}
+
 function classifyFailure(raw: unknown, attempt: number, timedOut: boolean): Classified {
 	const error = raw as { name?: unknown; code?: unknown; $metadata?: { httpStatusCode?: unknown } } | null;
 	const name = typeof error?.name === 'string' ? error.name : 'Error';
@@ -267,16 +277,27 @@ function classifyFailure(raw: unknown, attempt: number, timedOut: boolean): Clas
 		httpStatus: number,
 		errorCode: string,
 		retry: boolean,
-		retryAfter?: string
+		retryAfter?: string,
+		upstreamMessage?: string
 	): Classified => ({
-		error: new CheckpointStoreError(message, httpStatus, errorCode, false, retryAfter, attempt, name),
+		error: new CheckpointStoreError(message, httpStatus, errorCode, false, retryAfter, attempt, name, upstreamMessage),
 		retry
 	});
+	// A denied STS assumption or bucket write is deterministic: it stays denied
+	// no matter how long the SDK spent getting there, so it is classified before
+	// the timeout check and never retried.
+	if (CONFIGURATION_ERROR_NAMES.has(name) || status === 403 || status === 404) {
+		return fail(
+			'Checkpoint service is not configured',
+			503,
+			'checkpoint_unavailable',
+			false,
+			undefined,
+			boundedUpstreamMessage(raw)
+		);
+	}
 	if (timedOut || name === 'AbortError' || name === 'TimeoutError') {
 		return fail('Checkpoint write did not complete in time', 504, 'checkpoint_store_unreachable', true);
-	}
-	if (CONFIGURATION_ERROR_NAMES.has(name) || status === 403 || status === 404) {
-		return fail('Checkpoint service is not configured', 503, 'checkpoint_unavailable', false);
 	}
 	if (THROTTLE_ERROR_NAMES.has(name) || status === 429) {
 		return fail('Checkpoint store is throttling writes', 429, 'checkpoint_store_throttled', true, '1');

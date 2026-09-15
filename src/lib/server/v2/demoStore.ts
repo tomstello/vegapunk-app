@@ -111,7 +111,13 @@ async function recordToS3(
 	} catch (error) {
 		const fields =
 			error instanceof CheckpointStoreError
-				? { code: error.code, status: error.status, attempts: error.attempts, upstream: error.upstreamName }
+				? {
+						code: error.code,
+						status: error.status,
+						attempts: error.attempts,
+						upstream: error.upstreamName,
+						upstreamMessage: error.upstreamMessage
+					}
 				: {};
 		logger.warn({ event: 'demo_transcript_store_failed', sink: 's3', ...fields }, 'demo transcript not stored');
 	}

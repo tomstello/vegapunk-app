@@ -24,7 +24,9 @@ export class CheckpointStoreError extends Error {
 		public readonly ambiguousCreate = false,
 		public readonly retryAfter?: string,
 		public readonly attempts = 1,
-		public readonly upstreamName?: string
+		public readonly upstreamName?: string,
+		// Bounded AWS error text, present only for configuration-class failures.
+		public readonly upstreamMessage?: string
 	) {
 		super(message);
 	}

@@ -182,6 +182,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				store,
 				attempts: error.attempts,
 				upstream: error.upstreamName,
+				upstreamMessage: error.upstreamMessage,
 				ambiguousCreate: error.ambiguousCreate
 			};
 			if (error.code === 'checkpoint_unavailable') {
