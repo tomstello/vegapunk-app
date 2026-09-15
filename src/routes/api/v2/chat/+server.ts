@@ -21,6 +21,7 @@ import { ScrubberError, scrubUserMessage } from '$lib/server/v2/scrubber';
 import { ChatRequestSchema } from '$lib/server/v2/schemas';
 import { effectiveMaxTurns, getStudyConfigRevision } from '$lib/server/v2/studyConfig';
 import { recordDemoTranscript } from '$lib/server/v2/demoStore';
+import { waitUntil } from '@vercel/functions';
 import {
 	issueHistoryTag,
 	signingKey,
@@ -349,13 +350,15 @@ export const POST: RequestHandler = async ({ request }) => {
 								];
 								logTurnComplete('application_limit', 'capped');
 								if (config.demo) {
-									void recordDemoTranscript(session, config, completedHistory, {
+									// The response ends right after this; waitUntil keeps the function
+									// alive so the store writes are not frozen mid-flight.
+									waitUntil(recordDemoTranscript(session, config, completedHistory, {
 										sequence: body.sequence,
 										assistantMessageId,
 										generationId,
 										finishReason: 'application_limit',
 										completionStatus: 'capped'
-									});
+									}));
 								}
 								controller.enqueue(
 									sse('done', {
@@ -422,13 +425,15 @@ export const POST: RequestHandler = async ({ request }) => {
 							];
 							logTurnComplete(finishReason, completionStatus);
 							if (config.demo) {
-								void recordDemoTranscript(session, config, completedHistory, {
+								// The response ends right after this; waitUntil keeps the function
+								// alive so the store writes are not frozen mid-flight.
+								waitUntil(recordDemoTranscript(session, config, completedHistory, {
 									sequence: body.sequence,
 									assistantMessageId,
 									generationId,
 									finishReason,
 									completionStatus
-								});
+								}));
 							}
 							controller.enqueue(
 								sse('done', {

@@ -90,10 +90,17 @@ async function recordToS3(
 	body: string,
 	sequence: number
 ): Promise<void> {
+	// The demo follows the checkpoint store switch. Say so when skipping, so a
+	// silent bucket is distinguishable from a write that never ran.
+	let store: string;
 	try {
-		if (selectCheckpointStore() !== 's3') return;
+		store = selectCheckpointStore();
 	} catch {
-		return; // checkpoint store disabled: the demo follows the same switch
+		store = 'disabled';
+	}
+	if (store !== 's3') {
+		logger.info({ event: 'demo_transcript_store_skipped', sink: 's3', store }, 'demo transcript S3 sink not selected');
+		return;
 	}
 	try {
 		const s3 = getS3CheckpointConfig();
