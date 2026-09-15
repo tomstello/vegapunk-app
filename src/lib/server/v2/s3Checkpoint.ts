@@ -141,17 +141,65 @@ export function checkpointObject(args: {
 	return { key, streamRef, body, bodySha256Base64, metadata, checksum, charLength, byteLength };
 }
 
-export function putObjectInput(config: S3CheckpointConfig, object: CheckpointObject): PutObjectCommandInput {
+export function s3PutInput(
+	config: S3CheckpointConfig,
+	args: { key: string; body: Uint8Array; metadata: Record<string, string> }
+): PutObjectCommandInput {
 	return {
 		Bucket: config.bucket,
-		Key: object.key,
-		Body: object.body,
-		ContentLength: object.body.byteLength,
+		Key: args.key,
+		Body: args.body,
+		ContentLength: args.body.byteLength,
 		ContentType: 'application/json; charset=utf-8',
 		// S3 recomputes this on receipt and rejects a corrupted upload. The
 		// bucket's default encryption (SSE-S3) applies; no encryption headers.
-		ChecksumSHA256: object.bodySha256Base64,
-		Metadata: object.metadata
+		ChecksumSHA256: createHash('sha256').update(args.body).digest('base64'),
+		Metadata: args.metadata
+	};
+}
+
+export function putObjectInput(config: S3CheckpointConfig, object: CheckpointObject): PutObjectCommandInput {
+	return s3PutInput(config, { key: object.key, body: object.body, metadata: object.metadata });
+}
+
+// Standalone-demo transcript (see demoStore.ts). The demo has no browser-side
+// checkpoint worker; the chat route already holds the redacted canonical
+// history after each turn and records it here, one immutable object per turn,
+// under the same `v2/` prefix the writer role is allowed to put to:
+//
+//   v2/<configVersion>/demo/<sessionKey>/<sequence>.json
+//
+// The body is the same envelope the Vercel Blob demo store writes, so either
+// copy can be read with the same tooling.
+export type DemoTranscriptObject = {
+	key: string;
+	body: Uint8Array;
+	metadata: Record<string, string>;
+};
+
+export function demoTranscriptObject(args: {
+	configVersion: string;
+	sessionKey: string;
+	sequence: number;
+	body: string;
+}): DemoTranscriptObject {
+	if (!KEY_SEGMENT.test(args.configVersion) || !KEY_SEGMENT.test(args.sessionKey)) {
+		throw new CheckpointStoreError('Demo transcript key could not be derived', 500, 'checkpoint_key_invalid');
+	}
+	if (!Number.isInteger(args.sequence) || args.sequence < 0 || args.sequence > 999_999) {
+		throw new CheckpointStoreError('Demo transcript key could not be derived', 500, 'checkpoint_key_invalid');
+	}
+	const key = `v2/${args.configVersion}/demo/${args.sessionKey}/${String(args.sequence).padStart(6, '0')}.json`;
+	return {
+		key,
+		body: new TextEncoder().encode(args.body),
+		metadata: {
+			kind: 'demo-transcript',
+			schemaversion: '1',
+			sessionkey: args.sessionKey,
+			configversion: args.configVersion,
+			sequence: String(args.sequence)
+		}
 	};
 }
 
@@ -249,8 +297,18 @@ export async function putCheckpointObject(args: {
 	timeoutMs?: number;
 	retryDelayMs?: () => number;
 }): Promise<{ attempts: number }> {
+	return putS3Object({ ...args, input: putObjectInput(args.config, args.object) });
+}
+
+export async function putS3Object(args: {
+	config: S3CheckpointConfig;
+	input: PutObjectCommandInput;
+	client?: CheckpointObjectClient;
+	timeoutMs?: number;
+	retryDelayMs?: () => number;
+}): Promise<{ attempts: number }> {
 	const client = args.client ?? defaultClient(args.config);
-	const input = putObjectInput(args.config, args.object);
+	const { input } = args;
 	const timeoutMs = args.timeoutMs ?? CHECKPOINT_UPSTREAM_TIMEOUT_MS;
 	const retryDelayMs = args.retryDelayMs ?? (() => 250 + Math.random() * 250);
 	let lastFailure: Classified | null = null;

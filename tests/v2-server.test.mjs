@@ -1289,6 +1289,50 @@ test('S3 checkpoint writes retry once on transient failures and never on configu
 	assert.equal(calls, 1);
 });
 
+test('demo transcripts get one immutable S3 object per turn under the writer prefix', async () => {
+	const body = JSON.stringify({ schemaVersion: 1, kind: 'demo-transcript', messages: [{ role: 'user', content: 'hi' }] });
+	const object = s3.demoTranscriptObject({
+		configVersion: 'vaccine-chat-demo-v2',
+		sessionKey: SESSION_ID,
+		sequence: 3,
+		body
+	});
+	assert.equal(object.key, `v2/vaccine-chat-demo-v2/demo/${SESSION_ID}/000003.json`);
+	assert.equal(Buffer.from(object.body).toString('utf8'), body);
+	assert.deepEqual(object.metadata, {
+		kind: 'demo-transcript',
+		schemaversion: '1',
+		sessionkey: SESSION_ID,
+		configversion: 'vaccine-chat-demo-v2',
+		sequence: '3'
+	});
+	const input = s3.s3PutInput(S3_TEST_CONFIG, object);
+	assert.equal(input.Key, object.key);
+	assert.equal(input.ChecksumSHA256, createHash('sha256').update(object.body).digest('base64'));
+	assert.equal(input.ContentType, 'application/json; charset=utf-8');
+	for (const bad of [
+		{ configVersion: '../escape', sessionKey: SESSION_ID, sequence: 1, body },
+		{ configVersion: 'vaccine-chat-demo-v2', sessionKey: 'not/a/uuid', sequence: 1, body },
+		{ configVersion: 'vaccine-chat-demo-v2', sessionKey: SESSION_ID, sequence: -1, body }
+	]) {
+		assert.throws(() => s3.demoTranscriptObject(bad), (error) => error.code === 'checkpoint_key_invalid');
+	}
+
+	let calls = 0;
+	const client = {
+		send: async (command) => {
+			calls += 1;
+			assert.equal(command.input.Key, object.key);
+			return {};
+		}
+	};
+	assert.deepEqual(
+		await s3.putS3Object({ config: S3_TEST_CONFIG, input, client, retryDelayMs: () => 0 }),
+		{ attempts: 1 }
+	);
+	assert.equal(calls, 1);
+});
+
 test('checkpoint store selection and S3 configuration fail closed', async () => {
 	const storePath = 'src/lib/server/v2/checkpointStore.ts';
 	const disabled = await loadServerModule(storePath, { CHECKPOINT_STORE: 's3' });
