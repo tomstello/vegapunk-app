@@ -18,7 +18,7 @@
 // the latency split between an instance's first second and its steady state.
 
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
@@ -82,6 +82,12 @@ if (args.help === 'true') {
                                   plus the terminal write: 2*turns + 1
                           Requires a deployment whose checkpoint store is S3;
                           the run is refused otherwise (see below).
+  --credits-settle <s>    Seconds to keep polling the OpenRouter balance after
+                          the run before recording spend (default 300, 0 to
+                          take a single immediate reading). See below.
+  --reconcile <path>      Do not run a load test. Re-read the balance now and
+                          rewrite that results file's spend figure from its
+                          recorded opening reading.
 
 Ctrl-C once stops the same way (drain, then write results). Ctrl-C twice
 aborts immediately without results. Exit code 0 = ran to completion,
@@ -89,6 +95,17 @@ aborts immediately without results. Exit code 0 = ran to completion,
 preflight refused the target. If OPENROUTER_API_KEY is set in the
 environment, the account's credit balance is read from openrouter.ai before
 and after the run and recorded under meta.credits.
+
+Spend accounting settles slowly. OpenRouter bills asynchronously, and after
+a large run the endpoint can serve a stale figure for many minutes: on
+2026-09-21 a 5,393-turn run read the same usage immediately after the run
+and again three minutes later, then reported $39 more some minutes after
+that, which was 45% of that run's real cost. Two equal readings are
+therefore not evidence of anything. --credits-settle keeps polling and
+records every sample under meta.credits.samples, and meta.credits.settled
+says whether the figure had stopped moving when the window closed. When it
+reads false, treat the cost as a floor and re-run with --reconcile later;
+the most reliable figure of all is the opening reading of the next run.
 
 Checkpoint safety: with --checkpoint on, the harness first probes
 /api/v2/checkpoint with a deliberately invalid handle. That request is
@@ -133,6 +150,60 @@ const CHECKPOINT_MODE = args.checkpoint === 'true' ? 'full' : (args.checkpoint ?
 if (!['off', 'turn', 'full'].includes(CHECKPOINT_MODE)) {
 	console.error(`Unknown checkpoint mode ${CHECKPOINT_MODE}; use off, turn, or full`);
 	process.exit(2);
+}
+const CREDITS_SETTLE_SECONDS = Math.max(0, integer(args['credits-settle'], 300));
+
+// --reconcile re-costs a finished run from its recorded opening reading. It
+// runs no traffic, so it is handled before the host guard and every other
+// setting. Function declarations below are hoisted, so readCredits is callable.
+if (args.reconcile !== undefined && args.reconcile !== 'true') {
+	const path = resolve(args.reconcile);
+	let report;
+	try {
+		report = JSON.parse(await readFile(path, 'utf8'));
+	} catch (error) {
+		console.error(`Could not read results file ${path}: ${error?.message ?? error}`);
+		process.exit(2);
+	}
+	const before = report?.meta?.credits?.before;
+	if (typeof before?.totalUsage !== 'number') {
+		console.error(`${path} has no opening credits reading to reconcile against`);
+		process.exit(2);
+	}
+	// A later run's opening reading is the correct upper bound: everything the
+	// account was billed between the two belongs to this run, however late it
+	// posted. Without one, "now" is the bound and the figure is only a floor,
+	// since any spend since -- including a later run -- is swept in with it.
+	const bound = await nextRunOpeningReading(dirname(path), before.readAt);
+	const endpoint = bound?.reading ?? (await readCredits());
+	if (typeof endpoint?.totalUsage !== 'number') {
+		console.error(`Could not read the balance now: ${endpoint?.error ?? 'no OPENROUTER_API_KEY'}`);
+		process.exit(2);
+	}
+	const previous = report.meta.credits.spent;
+	const spent = Math.round((endpoint.totalUsage - before.totalUsage) * 10_000) / 10_000;
+	const okTurns = report?.summary?.chat?.ok || 0;
+	report.meta.credits = {
+		...report.meta.credits,
+		after: endpoint,
+		spent,
+		settled: bound ? true : null,
+		boundedBy: bound?.label ?? null,
+		reconciledAt: new Date().toISOString(),
+		supersededSpent: previous ?? null
+	};
+	await writeFile(path, JSON.stringify(report, null, 2));
+	console.log(
+		`${report.meta.label}: spend ${previous === null || previous === undefined ? '(none recorded)' : '$' + previous.toFixed(2)} -> $${spent.toFixed(2)}` +
+			(okTurns ? `  ($${(spent / okTurns).toFixed(4)} per successful turn over ${okTurns})` : '')
+	);
+	console.log(
+		bound
+			? `Bounded by the opening reading of ${bound.label}, so this is the run's full cost.`
+			: 'No later run to bound this against, so it is a floor: any spend since is included, ' +
+					'and late-posting charges may still be missing. Re-run after the next load test.'
+	);
+	process.exit(0);
 }
 
 const ALLOWED_HOST =
@@ -578,6 +649,88 @@ async function readCredits() {
 	} catch (error) {
 		return { error: String(error?.cause?.code ?? error?.name ?? error).slice(0, 80) };
 	}
+}
+
+/**
+ * The opening credits reading of the earliest run that started after `afterISO`.
+ *
+ * Used to bound a reconciliation: whatever the account was billed between one
+ * run's opening reading and the next run's belongs to the first run, no matter
+ * how late OpenRouter posted it. Runs that overlap in time cannot be separated
+ * this way and are skipped by the caller's own ordering.
+ */
+async function nextRunOpeningReading(directory, afterISO) {
+	let files;
+	try {
+		files = await readdir(directory);
+	} catch {
+		return null;
+	}
+	let best = null;
+	for (const file of files) {
+		if (!file.endsWith('.json')) continue;
+		let other;
+		try {
+			other = JSON.parse(await readFile(resolve(directory, file), 'utf8'));
+		} catch {
+			continue;
+		}
+		const reading = other?.meta?.credits?.before;
+		if (typeof reading?.totalUsage !== 'number' || typeof reading.readAt !== 'string') continue;
+		if (!(reading.readAt > afterISO)) continue;
+		if (best === null || reading.readAt < best.reading.readAt) {
+			best = { label: other.meta.label ?? file, reading };
+		}
+	}
+	return best;
+}
+
+/**
+ * Poll the balance after the run until the account's usage stops moving.
+ *
+ * OpenRouter bills asynchronously and the endpoint serves a stale figure while
+ * it catches up, so a single post-run read reports whatever has been posted so
+ * far rather than what the run cost. Worse, the stale value is stable: on
+ * 2026-09-21 a 5,393-turn run read identical usage at t+0 and t+3 min, then
+ * grew by $39 (45% of its real cost) some minutes later. So "two equal reads"
+ * cannot be the stopping rule, and this polls the whole window instead,
+ * reporting honestly whether the number was still moving when it gave up.
+ */
+async function settleCredits(seconds, intervalMs = 30_000) {
+	const first = await readCredits();
+	if (seconds <= 0 || typeof first?.totalUsage !== 'number') {
+		return { final: first, samples: first ? [first] : [], settled: seconds <= 0 ? null : false };
+	}
+	const samples = [first];
+	const deadline = Date.now() + seconds * 1_000;
+	let lastChangeAt = Date.now();
+	console.error(
+		`settling spend: polling the balance for up to ${seconds}s ` +
+			'(OpenRouter posts usage asynchronously; --credits-settle 0 skips this)'
+	);
+	while (Date.now() < deadline) {
+		await sleep(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
+		const sample = await readCredits();
+		if (typeof sample?.totalUsage !== 'number') continue;
+		const previous = samples.at(-1);
+		if (sample.totalUsage !== previous.totalUsage) {
+			lastChangeAt = Date.now();
+			console.error(
+				`  usage ${previous.totalUsage.toFixed(4)} -> ${sample.totalUsage.toFixed(4)} ` +
+					`(+$${(sample.totalUsage - previous.totalUsage).toFixed(2)})`
+			);
+		}
+		samples.push(sample);
+	}
+	// Quiet for at least half the window, and never on the strength of a single
+	// repeated reading: the stale value that misreported the 2026-09-21 run held
+	// steady for three minutes before it moved.
+	const quietMs = Date.now() - lastChangeAt;
+	return {
+		final: samples.at(-1),
+		samples,
+		settled: samples.length >= 3 && quietMs >= Math.min(seconds * 500, 120_000)
+	};
 }
 
 async function conversation(index) {
@@ -1118,16 +1271,21 @@ const summary = summarize(results);
 const rows = timeline(results);
 printSummary(summary, rows);
 
-const creditsAfter = await readCredits();
+const settledCredits = creditsBefore ? await settleCredits(CREDITS_SETTLE_SECONDS) : null;
+const creditsAfter = settledCredits?.final ?? null;
 const credits =
 	creditsBefore || creditsAfter
 		? {
 				before: creditsBefore,
 				after: creditsAfter,
+				// From totalUsage, not the rounded balance: usage is full precision
+				// and stays correct if the account is topped up mid-run.
 				spent:
-					creditsBefore?.balance !== undefined && creditsAfter?.balance !== undefined
-						? Math.round((creditsBefore.balance - creditsAfter.balance) * 100) / 100
-						: null
+					typeof creditsBefore?.totalUsage === 'number' && typeof creditsAfter?.totalUsage === 'number'
+						? Math.round((creditsAfter.totalUsage - creditsBefore.totalUsage) * 10_000) / 10_000
+						: null,
+				settled: settledCredits?.settled ?? null,
+				samples: settledCredits?.samples ?? []
 			}
 		: null;
 if (credits?.spent !== null && credits?.spent !== undefined) {
@@ -1136,6 +1294,12 @@ if (credits?.spent !== null && credits?.spent !== undefined) {
 		`credits: $${creditsBefore.balance.toFixed(2)} -> $${creditsAfter.balance.toFixed(2)}  spent $${credits.spent.toFixed(2)}` +
 			(okTurns ? `  ($${(credits.spent / okTurns).toFixed(4)} per successful turn)` : '')
 	);
+	if (credits.settled === false) {
+		console.log(
+			`  <-- spend was still moving when the ${CREDITS_SETTLE_SECONDS}s window closed: treat $${credits.spent.toFixed(2)} as a floor.`
+		);
+		console.log(`      reconcile later with: node loadtest/harness.mjs --reconcile ${OUT}`);
+	}
 }
 if (stopReason) {
 	console.log(
