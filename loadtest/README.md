@@ -140,6 +140,21 @@ failed, so `--max-failures` still stops a run whose store has fallen over.
 Watch `creates` in the summary: there should be exactly one per conversation,
 and more means handles were lost and the store holds duplicate rows.
 
+The load-test project needs `LOADTEST_INSTANCE_HEADER=1` (or `PROVIDER_STUB=1`)
+for the header to be emitted at all, on top of `CHECKPOINT_STORE=s3` and the
+three `CHECKPOINT_AWS_*`/`CHECKPOINT_S3_BUCKET` values the writer reads. With
+the flag absent the preflight cannot read the store and refuses the run, which
+is what happens by default after a live-model sequence, since those runs remove
+`PROVIDER_STUB`.
+
+First verified end to end on 2026-09-21 against the live-model load-test
+deployment: one 3-turn conversation produced 7 writes, `creates=1 updates=6`,
+sequences 1 to 7, every checksum matching. Checkpoint time-to-first-byte was
+145 ms p50 warm, 1,410 ms on an instance's first write, against chat turns of
+5.7 s -- cheap per write, but 70 writes per second at the 10 conversations per
+second target, so roughly 12 concurrent checkpoint requests in steady state.
+Request bodies grew 1,954 to 6,052 bytes across the conversation.
+
 `--questions short|long` picks the user-turn text. Against the stub it
 makes no difference. Against the live model it sets answer length and
 therefore spend: the system prompt asks for thorough answers with sources,
@@ -203,11 +218,6 @@ direction as real platform slowness. Two checks:
 - The stub does not open outbound sockets, so per-instance connection or
   file-descriptor limits are not exercised. That needs the external mock
   variant, which can reuse the same `providerFetch` seam.
-- The checkpoint create/update handle round-trip has only been exercised up to
-  the store boundary (locally, where no S3 bucket is configured, every write
-  returns `checkpoint_unavailable`). The first run against a deployment with
-  S3 configured should be a small one, checked for `creates` equal to the
-  conversation count before any bulk run.
 - One generator machine holds a few thousand concurrent SSE streams before
   ephemeral ports run out. Beyond that, run the harness from several hosts
   or port the flow to a distributed tool.
