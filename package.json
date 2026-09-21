@@ -9,7 +9,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "eslint .",
-		"test": "node --test tests/v2-client.test.mjs tests/v2-server.test.mjs tests/loadtest-stub.test.mjs",
+		"test": "node --test tests/v2-client.test.mjs tests/v2-server.test.mjs tests/loadtest-stub.test.mjs tests/loadtest-snapshot.test.mjs",
 		"loadtest": "node loadtest/harness.mjs",
 		"v2:config-manifest": "node scripts/v2-config-manifest.mjs"
 	},
