@@ -23,14 +23,16 @@ interface WorkerOptions {
 	onFailure: (code: string) => void;
 }
 
-// The server's 20-second Qualtrics clock begins only after it has received up
-// to 400 KB from the browser. A long wall-clock margin is safer on cellular:
+// The server's 20-second checkpoint-store clock (Qualtrics or S3; see
+// CHECKPOINT_UPSTREAM_TIMEOUT_MS) begins only after it has received up to
+// 400 KB from the browser. A long wall-clock margin is safer on cellular:
 // aborting an otherwise successful create can manufacture an ambiguous row.
 export const CHECKPOINT_CLIENT_TIMEOUT_MS = 75_000;
 // A recovered/ambiguous lease is a heuristic, not a lock. The 120-second
 // window covers the current 75-second browser request deadline plus the
-// server's 20-second Qualtrics deadline with margin. Duplicate tabs and a
-// platform request that outlives these bounds still require recovery merging.
+// server's 20-second store deadline (up to two attempts on S3) with margin.
+// Duplicate tabs and a platform request that outlives these bounds still
+// require recovery merging.
 export const CHECKPOINT_LEASE_GUARD_WINDOW_MS = 120_000;
 const MAX_KEEPALIVE_BYTES = 60_000;
 const CHECKSUM_PATTERN = /^[0-9a-f]{64}$/i;

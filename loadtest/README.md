@@ -29,7 +29,10 @@ the entries there.
 - `loadtest/harness.mjs`: the load generator. Speaks the real protocol
   (session, signed history echo, redacted-text adoption, SSE parsing), never
   calls the checkpoint route, and refuses every host except the load-test
-  project and localhost.
+  project and localhost. The "never calls checkpoint" rule exists because bulk
+  load must stay off Qualtrics; with `CHECKPOINT_STORE=s3` on the load-test
+  project that constraint no longer applies, and exercising the route from the
+  harness is a separate decision for the load-test plan.
 
 ## Local run
 

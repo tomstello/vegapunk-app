@@ -1,21 +1,24 @@
 import { env } from '$env/dynamic/private';
+import { CheckpointStoreError, dequote, type CheckpointSnapshot } from './checkpointStore';
 import { sha256Hex } from './crypto';
 import {
 	CHECKPOINT_CHUNK_COUNT,
 	CHECKPOINT_CHUNK_SIZE,
+	CHECKPOINT_UPSTREAM_TIMEOUT_MS,
 	MAX_TRANSCRIPT_UTF16_CODE_UNITS,
-	MAX_TRANSCRIPT_UTF8_BYTES,
-	QUALTRICS_TIMEOUT_MS
+	MAX_TRANSCRIPT_UTF8_BYTES
 } from './limits';
 import type { SessionClaims } from './tokens';
 
-export type CheckpointSnapshot = {
-	createOperationId: string;
-	snapshotSequence: number;
-	state: 'active' | 'interrupted' | 'completed' | 'capture_error';
-	reasonHint?: string;
-	transcriptJson: string;
-};
+// Legacy checkpoint writer (Qualtrics checkpoint survey). Selected while
+// CHECKPOINT_STORE is unset or "qualtrics"; see checkpointStore.ts and the S3
+// writer in s3Checkpoint.ts. Scheduled for removal once production has run on
+// S3 through an agreed soak.
+
+export type { CheckpointSnapshot };
+// Subclass of the error the S3 writer throws, so the route needs one
+// instanceof check for both stores.
+export class QualtricsCheckpointError extends CheckpointStoreError {}
 
 export type QualtricsCheckpointConfig = {
 	token: string;
@@ -23,24 +26,8 @@ export type QualtricsCheckpointConfig = {
 	baseUrl: string;
 };
 
-export class QualtricsCheckpointError extends Error {
-	constructor(
-		message: string,
-		public readonly status: number,
-		public readonly code: string,
-		public readonly ambiguousCreate = false,
-		public readonly retryAfter?: string
-	) {
-		super(message);
-	}
-}
-
-function dequote(value: string): string {
-	return value
-		.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '')
-		.trim()
-		.replace(/^["'\u2018\u2019\u201C\u201D]+|["'\u2018\u2019\u201C\u201D]+$/g, '')
-		.trim();
+export function isQualtricsResponseId(value: string): boolean {
+	return /^R_[A-Za-z0-9]+$/.test(value);
 }
 
 export function getQualtricsCheckpointConfig(): QualtricsCheckpointConfig {
@@ -131,7 +118,7 @@ async function qualtricsFetch(
 	operation: 'create' | 'update'
 ): Promise<Response> {
 	const timeout = new AbortController();
-	const timer = setTimeout(() => timeout.abort(new Error('qualtrics_timeout')), QUALTRICS_TIMEOUT_MS);
+	const timer = setTimeout(() => timeout.abort(new Error('qualtrics_timeout')), CHECKPOINT_UPSTREAM_TIMEOUT_MS);
 	try {
 		// Deliberately do not couple this storage write to the browser request's
 		// disconnect signal. A pagehide/closed tab is precisely when the backup
@@ -205,7 +192,7 @@ export async function createQualtricsCheckpoint(args: {
 			true
 		);
 	}
-	if (!/^R_[A-Za-z0-9]+$/.test(responseId)) {
+	if (!isQualtricsResponseId(responseId)) {
 		throw new QualtricsCheckpointError(
 			'Checkpoint may have been created but its identifier was not returned',
 			502,

@@ -40,7 +40,17 @@ cp .env.example .env
 
 Every other variable can stay at its `.env.example` default for local work.
 Leave `ENABLE_V2_CHECKPOINT` and `ENABLE_LEGACY_V1` set to `false`: local runs
-then write to no Qualtrics tenant and keep the retired v1 routes closed.
+then write transcript checkpoints nowhere and keep the retired v1 routes closed.
+
+**Checkpoint store.** Transcript snapshots are mirrored server-side so a
+conversation survives a killed browser. `CHECKPOINT_STORE=s3` writes one
+immutable object per snapshot to an S3 bucket, authenticated through Vercel
+OIDC federation into an IAM role that can only `PutObject` (see
+`src/lib/server/v2/s3Checkpoint.ts` for the key layout). `qualtrics`, or
+unset, keeps the legacy Qualtrics checkpoint survey writer. The browser
+protocol is identical for both, and the `V2_RUNTIME_POLICY` constants that
+describe the legacy writer are deliberately unchanged because they are part of
+every study configuration hash.
 
 **Logging.** `LOG_LEVEL` (`fatal`…`trace`, or `silent`) sets server log
 verbosity; it defaults to `debug` on the dev server and `info` on Vercel. The

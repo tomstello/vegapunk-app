@@ -13,8 +13,9 @@ let openrouter;
 let crypto;
 let http;
 let scrubber;
+let s3;
 
-async function loadServerModule(relativePath) {
+async function loadServerModule(relativePath, privateEnv = {}) {
 	const entryPoint = fileURLToPath(new URL(`../${relativePath}`, import.meta.url));
 	const result = await build({
 		entryPoints: [entryPoint],
@@ -23,6 +24,12 @@ async function loadServerModule(relativePath) {
 		platform: 'node',
 		write: false,
 		logLevel: 'silent',
+		// The AWS SDK's CommonJS build requires node built-ins at runtime; give
+		// the ESM bundle a real `require` anchored at this test file so those
+		// calls resolve inside the data: URL module.
+		banner: {
+			js: `import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(${JSON.stringify(import.meta.url)});`
+		},
 		plugins: [
 			{
 				name: 'unit-test-private-env',
@@ -32,7 +39,7 @@ async function loadServerModule(relativePath) {
 						namespace: 'unit-test'
 					}));
 					esbuild.onLoad({ filter: /.*/, namespace: 'unit-test' }, () => ({
-						contents: 'export const env = {};',
+						contents: `export const env = ${JSON.stringify(privateEnv)};`,
 						loader: 'js'
 					}));
 				}
@@ -44,7 +51,7 @@ async function loadServerModule(relativePath) {
 }
 
 before(async () => {
-	[tokens, schemas, configs, checkpoint, openrouter, crypto, http, scrubber] = await Promise.all([
+	[tokens, schemas, configs, checkpoint, openrouter, crypto, http, scrubber, s3] = await Promise.all([
 		loadServerModule('src/lib/server/v2/tokens.ts'),
 		loadServerModule('src/lib/server/v2/schemas.ts'),
 		loadServerModule('src/lib/server/v2/studyConfig.ts'),
@@ -52,7 +59,8 @@ before(async () => {
 		loadServerModule('src/lib/server/v2/openrouter.ts'),
 		loadServerModule('src/lib/server/v2/crypto.ts'),
 		loadServerModule('src/lib/server/v2/http.ts'),
-		loadServerModule('src/lib/server/v2/scrubber.ts')
+		loadServerModule('src/lib/server/v2/scrubber.ts'),
+		loadServerModule('src/lib/server/v2/s3Checkpoint.ts')
 	]);
 });
 
@@ -1079,6 +1087,345 @@ test('Qualtrics checkpoint writes never retry or turn a failed update into a cre
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
+});
+
+const S3_TEST_CONFIG = Object.freeze({
+	region: 'us-east-1',
+	roleArn: 'arn:aws:iam::123456789012:role/vercel-vegapunk-checkpoint-writer-loadtest',
+	bucket: 'wharton-vaccine-chat-checkpoint-loadtest'
+});
+
+function s3TestObject(overrides = {}) {
+	const config = configs.getStudyConfig('flu');
+	const session = tokens.issueSessionToken({
+		secret: SECRET,
+		chatSessionKey: SESSION_ID,
+		attemptNonce: ATTEMPT_ID,
+		condition: 'flu',
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		now: 3_000
+	}).claims;
+	const transcriptJson = JSON.stringify({ schemaVersion: 2, messages: [{ content: 'héllo 😀 界' }] });
+	return {
+		session,
+		transcriptJson,
+		object: s3.checkpointObject({
+			session,
+			snapshot: {
+				createOperationId: OPERATION_ID,
+				snapshotSequence: 7,
+				state: 'active',
+				reasonHint: 'assistant_completed ✓',
+				transcriptJson,
+				...overrides
+			},
+			nowIso: '2026-09-11T00:00:00.000Z'
+		})
+	};
+}
+
+const s3Failure = (name, httpStatusCode) =>
+	Object.assign(new Error(name), { name, $metadata: { httpStatusCode } });
+
+test('S3 checkpoint objects use a deterministic key, carry the transcript checksum, and keep metadata ASCII', () => {
+	const { session, transcriptJson, object } = s3TestObject();
+	const config = configs.getStudyConfig('flu');
+	assert.equal(object.streamRef, `v2/${config.configVersion}/flu/${SESSION_ID}/${OPERATION_ID}`);
+	assert.equal(object.key, `${object.streamRef}/000007.json`);
+	assert.equal(s3.isS3StreamRef(object.streamRef), true);
+	assert.equal(object.checksum, createHash('sha256').update(transcriptJson).digest('hex'));
+	assert.equal(object.bodySha256Base64, createHash('sha256').update(object.body).digest('base64'));
+	assert.equal(object.charLength, transcriptJson.length);
+	assert.equal(object.byteLength, Buffer.byteLength(transcriptJson, 'utf8'));
+
+	const envelope = JSON.parse(Buffer.from(object.body).toString('utf8'));
+	assert.equal(envelope.schemaVersion, 2);
+	assert.equal(envelope.transcriptJson, transcriptJson);
+	assert.equal(envelope.checksum, object.checksum);
+	assert.equal(envelope.snapshotSequence, 7);
+	assert.equal(envelope.sessionKey, SESSION_ID);
+	assert.equal(envelope.configHash, session.configHash);
+	assert.equal(envelope.storedAtISO, '2026-09-11T00:00:00.000Z');
+
+	assert.equal(object.metadata.reasonhint, 'assistant_completed ');
+	assert.equal(object.metadata.sessionkey, SESSION_ID);
+	assert.equal(object.metadata.checksum, object.checksum);
+	assert.equal(object.metadata.snapshotsequence, '7');
+	for (const value of Object.values(object.metadata)) {
+		assert.equal(/^[\x20-\x7e]*$/.test(value), true);
+		assert.equal(value.includes('llo'), false);
+	}
+
+	// Same session and request produce identical bytes on the same key, which
+	// is what makes a repeated PutObject idempotent.
+	const again = s3TestObject().object;
+	assert.equal(again.key, object.key);
+	assert.equal(again.bodySha256Base64, object.bodySha256Base64);
+
+	assert.throws(
+		() => s3TestObject({ transcriptJson: 'x'.repeat(240_001) }),
+		(error) => error.code === 'transcript_too_large' && error.status === 413
+	);
+
+	const input = s3.putObjectInput(S3_TEST_CONFIG, object);
+	assert.equal(input.Bucket, S3_TEST_CONFIG.bucket);
+	assert.equal(input.Key, object.key);
+	assert.equal(input.ChecksumSHA256, object.bodySha256Base64);
+	assert.equal(input.ContentType, 'application/json; charset=utf-8');
+	assert.equal(input.ContentLength, object.body.byteLength);
+	assert.equal(input.ServerSideEncryption, undefined);
+	assert.equal(input.Metadata.transcriptjson, undefined);
+});
+
+test('S3 checkpoint writes retry once on transient failures and never on configuration failures', async () => {
+	const { object } = s3TestObject();
+	const config = S3_TEST_CONFIG;
+	const noDelay = () => 0;
+
+	let calls = 0;
+	const inputs = [];
+	const unavailable = {
+		send: async (command) => {
+			calls += 1;
+			inputs.push(command.input);
+			throw s3Failure('ServiceUnavailable', 503);
+		}
+	};
+	await assert.rejects(
+		s3.putCheckpointObject({ config, object, client: unavailable, retryDelayMs: noDelay }),
+		(error) =>
+			error.code === 'checkpoint_write_failed' &&
+			error.status === 503 &&
+			error.attempts === 2 &&
+			error.ambiguousCreate === false &&
+			error.upstreamName === 'ServiceUnavailable' &&
+			!error.message.includes(object.key)
+	);
+	assert.equal(calls, 2);
+	assert.equal(inputs[0].Key, object.key);
+	assert.equal(inputs[1].Key, object.key);
+	assert.equal(inputs[1].ChecksumSHA256, object.bodySha256Base64);
+
+	calls = 0;
+	const flaky = {
+		send: async () => {
+			calls += 1;
+			if (calls === 1) throw s3Failure('SlowDown', 503);
+			return {};
+		}
+	};
+	assert.deepEqual(
+		await s3.putCheckpointObject({ config, object, client: flaky, retryDelayMs: noDelay }),
+		{ attempts: 2 }
+	);
+
+	calls = 0;
+	const throttled = {
+		send: async () => {
+			calls += 1;
+			throw s3Failure('SlowDown', 503);
+		}
+	};
+	await assert.rejects(
+		s3.putCheckpointObject({ config, object, client: throttled, retryDelayMs: noDelay }),
+		(error) => error.code === 'checkpoint_store_throttled' && error.status === 429 && error.retryAfter === '1'
+	);
+	assert.equal(calls, 2);
+
+	calls = 0;
+	const denied = {
+		send: async () => {
+			calls += 1;
+			throw s3Failure('AccessDenied', 403);
+		}
+	};
+	await assert.rejects(
+		s3.putCheckpointObject({ config, object, client: denied, retryDelayMs: noDelay }),
+		(error) => error.code === 'checkpoint_unavailable' && error.status === 503 && error.upstreamName === 'AccessDenied'
+	);
+	assert.equal(calls, 1);
+
+	// A denied STS assumption that only surfaces after the abort timer fired is
+	// still a configuration failure: one attempt, AWS's own message kept.
+	calls = 0;
+	const slowDenial = {
+		send: (_command, options) =>
+			new Promise((_resolve, reject) => {
+				calls += 1;
+				options.abortSignal.addEventListener('abort', () =>
+					reject(
+						Object.assign(new Error('User: arn:aws:sts::123456789012:assumed-role/x is not authorized to perform: sts:AssumeRoleWithWebIdentity'), {
+							name: 'AccessDenied',
+							$metadata: { httpStatusCode: 403 }
+						})
+					)
+				);
+			})
+	};
+	await assert.rejects(
+		s3.putCheckpointObject({ config, object, client: slowDenial, timeoutMs: 10, retryDelayMs: noDelay }),
+		(error) =>
+			error.code === 'checkpoint_unavailable' &&
+			error.attempts === 1 &&
+			error.upstreamName === 'AccessDenied' &&
+			error.upstreamMessage.includes('sts:AssumeRoleWithWebIdentity')
+	);
+	assert.equal(calls, 1);
+
+	calls = 0;
+	const noCredentials = {
+		send: async () => {
+			calls += 1;
+			throw Object.assign(new Error('no token'), { name: 'CredentialsProviderError' });
+		}
+	};
+	await assert.rejects(
+		s3.putCheckpointObject({ config, object, client: noCredentials, retryDelayMs: noDelay }),
+		(error) => error.code === 'checkpoint_unavailable' && error.attempts === 1
+	);
+	assert.equal(calls, 1);
+
+	calls = 0;
+	const hanging = {
+		send: (_command, options) =>
+			new Promise((_resolve, reject) => {
+				calls += 1;
+				options.abortSignal.addEventListener('abort', () =>
+					reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+				);
+			})
+	};
+	await assert.rejects(
+		s3.putCheckpointObject({ config, object, client: hanging, timeoutMs: 10, retryDelayMs: noDelay }),
+		(error) => error.code === 'checkpoint_store_unreachable' && error.status === 504 && error.attempts === 2
+	);
+	assert.equal(calls, 2);
+
+	calls = 0;
+	const rejected = {
+		send: async () => {
+			calls += 1;
+			throw s3Failure('InvalidRequest', 400);
+		}
+	};
+	await assert.rejects(
+		s3.putCheckpointObject({ config, object, client: rejected, retryDelayMs: noDelay }),
+		(error) => error.code === 'checkpoint_write_failed' && error.status === 502
+	);
+	assert.equal(calls, 1);
+});
+
+test('demo transcripts get one immutable S3 object per turn under the writer prefix', async () => {
+	const body = JSON.stringify({ schemaVersion: 1, kind: 'demo-transcript', messages: [{ role: 'user', content: 'hi' }] });
+	const object = s3.demoTranscriptObject({
+		configVersion: 'vaccine-chat-demo-v2',
+		sessionKey: SESSION_ID,
+		sequence: 3,
+		body
+	});
+	assert.equal(object.key, `v2/vaccine-chat-demo-v2/demo/${SESSION_ID}/000003.json`);
+	assert.equal(Buffer.from(object.body).toString('utf8'), body);
+	assert.deepEqual(object.metadata, {
+		kind: 'demo-transcript',
+		schemaversion: '1',
+		sessionkey: SESSION_ID,
+		configversion: 'vaccine-chat-demo-v2',
+		sequence: '3'
+	});
+	const input = s3.s3PutInput(S3_TEST_CONFIG, object);
+	assert.equal(input.Key, object.key);
+	assert.equal(input.ChecksumSHA256, createHash('sha256').update(object.body).digest('base64'));
+	assert.equal(input.ContentType, 'application/json; charset=utf-8');
+	for (const bad of [
+		{ configVersion: '../escape', sessionKey: SESSION_ID, sequence: 1, body },
+		{ configVersion: 'vaccine-chat-demo-v2', sessionKey: 'not/a/uuid', sequence: 1, body },
+		{ configVersion: 'vaccine-chat-demo-v2', sessionKey: SESSION_ID, sequence: -1, body }
+	]) {
+		assert.throws(() => s3.demoTranscriptObject(bad), (error) => error.code === 'checkpoint_key_invalid');
+	}
+
+	let calls = 0;
+	const client = {
+		send: async (command) => {
+			calls += 1;
+			assert.equal(command.input.Key, object.key);
+			return {};
+		}
+	};
+	assert.deepEqual(
+		await s3.putS3Object({ config: S3_TEST_CONFIG, input, client, retryDelayMs: () => 0 }),
+		{ attempts: 1 }
+	);
+	assert.equal(calls, 1);
+});
+
+test('checkpoint store selection and S3 configuration fail closed', async () => {
+	const storePath = 'src/lib/server/v2/checkpointStore.ts';
+	const disabled = await loadServerModule(storePath, { CHECKPOINT_STORE: 's3' });
+	assert.throws(() => disabled.selectCheckpointStore(), (error) => error.code === 'checkpoint_unavailable');
+	const legacy = await loadServerModule(storePath, { ENABLE_V2_CHECKPOINT: 'true' });
+	assert.equal(legacy.selectCheckpointStore(), 'qualtrics');
+	const explicitLegacy = await loadServerModule(storePath, { ENABLE_V2_CHECKPOINT: 'true', CHECKPOINT_STORE: 'qualtrics' });
+	assert.equal(explicitLegacy.selectCheckpointStore(), 'qualtrics');
+	const selected = await loadServerModule(storePath, { ENABLE_V2_CHECKPOINT: '"true"', CHECKPOINT_STORE: ' “S3” ' });
+	assert.equal(selected.selectCheckpointStore(), 's3');
+	const unknown = await loadServerModule(storePath, { ENABLE_V2_CHECKPOINT: 'true', CHECKPOINT_STORE: 'dynamo' });
+	assert.throws(() => unknown.selectCheckpointStore(), (error) => error.code === 'checkpoint_unavailable');
+
+	// The shared module was loaded with an empty environment.
+	assert.throws(() => s3.getS3CheckpointConfig(), (error) => error.code === 'checkpoint_unavailable' && error.status === 503);
+
+	const s3Path = 'src/lib/server/v2/s3Checkpoint.ts';
+	const goodEnv = {
+		CHECKPOINT_AWS_REGION: ' us-east-1 ',
+		CHECKPOINT_AWS_ROLE_ARN: `"${S3_TEST_CONFIG.roleArn}"`,
+		CHECKPOINT_S3_BUCKET: S3_TEST_CONFIG.bucket
+	};
+	const configured = await loadServerModule(s3Path, goodEnv);
+	assert.deepEqual(configured.getS3CheckpointConfig(), S3_TEST_CONFIG);
+	const badBucket = await loadServerModule(s3Path, { ...goodEnv, CHECKPOINT_S3_BUCKET: 'Bad_Bucket' });
+	assert.throws(() => badBucket.getS3CheckpointConfig(), (error) => error.code === 'checkpoint_unavailable');
+	const badRole = await loadServerModule(s3Path, { ...goodEnv, CHECKPOINT_AWS_ROLE_ARN: 'AKIAIOSFODNN7EXAMPLE' });
+	assert.throws(() => badRole.getS3CheckpointConfig(), (error) => error.code === 'checkpoint_unavailable');
+});
+
+test('checkpoint handles seal either a Qualtrics response ID or an S3 stream reference', () => {
+	const config = configs.getStudyConfig('covid');
+	const session = tokens.issueSessionToken({
+		secret: SECRET,
+		chatSessionKey: SESSION_ID,
+		attemptNonce: ATTEMPT_ID,
+		condition: 'covid',
+		configVersion: config.configVersion,
+		configHash: config.configHash,
+		now: 2_000
+	}).claims;
+	const streamRef = `v2/${config.configVersion}/covid/${SESSION_ID}/${OPERATION_ID}`;
+	for (const ref of ['R_legacy123', streamRef]) {
+		const handle = tokens.issueCheckpointHandle({
+			secret: SECRET,
+			session,
+			checkpointResponseId: ref,
+			createOperationId: OPERATION_ID,
+			acknowledgedSequence: 3,
+			acknowledgedChecksum: 'b'.repeat(64),
+			now: 2_000
+		});
+		assert.equal(handle.includes(SESSION_ID), false);
+		const verified = tokens.verifyCheckpointHandle({ token: handle, secret: SECRET, session, now: 2_001 });
+		assert.equal(verified.checkpointResponseId, ref);
+	}
+	const bogus = tokens.issueCheckpointHandle({
+		secret: SECRET,
+		session,
+		checkpointResponseId: '../../etc/passwd',
+		createOperationId: OPERATION_ID,
+		acknowledgedSequence: 3,
+		acknowledgedChecksum: 'b'.repeat(64),
+		now: 2_000
+	});
+	assert.throws(() => tokens.verifyCheckpointHandle({ token: bogus, secret: SECRET, session, now: 2_001 }));
 });
 
 test('provider retries at most once before output and preserves coalesced SSE events', async () => {

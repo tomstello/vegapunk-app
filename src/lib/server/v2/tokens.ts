@@ -58,7 +58,14 @@ const CheckpointHandlePayloadSchema = z
 		v: z.literal(V2_PROTOCOL_VERSION),
 		sid: z.string().uuid(),
 		attempt: z.string().regex(/^[a-f0-9]{64}$/),
-		checkpointResponseId: z.string().regex(/^R_[A-Za-z0-9]+$/),
+		// Store reference sealed into the handle: a Qualtrics response ID
+		// (legacy writer) or the S3 object prefix shared by one create operation.
+		// Both shapes stay valid so sessions in flight during a store cutover,
+		// in either direction, keep checkpointing. The field name is kept so
+		// handles issued before the S3 writer existed still parse.
+		checkpointResponseId: z
+			.string()
+			.regex(/^(?:R_[A-Za-z0-9]+|v2\/[A-Za-z0-9._/-]{1,240})$/),
 		createOperationId: z.string().uuid(),
 		acknowledgedSequence: z.number().int().min(0).max(1_000_000),
 		acknowledgedChecksum: z.string().regex(/^[a-f0-9]{64}$/),
