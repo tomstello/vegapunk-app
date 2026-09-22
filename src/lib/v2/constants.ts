@@ -23,7 +23,7 @@ export const CONFIG_VERSIONS: Record<StudyCondition, string> = {
 	// The standalone demo has no survey to name its revision, so this must track
 	// the server's active demo config (studyConfig.ts) or every demo session
 	// fails the version check before the chat starts.
-	demo: "vaccine-chat-demo-v2",
+	demo: "vaccine-chat-demo-v3",
 };
 
 export const DEFAULT_UI: PublicUiConfig = {
