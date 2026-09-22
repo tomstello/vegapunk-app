@@ -27,12 +27,16 @@ the entries there.
   instantiation (one per function instance), `age` is milliseconds since
   that instance booted, `n` is requests served by it.
 - `loadtest/harness.mjs`: the load generator. Speaks the real protocol
-  (session, signed history echo, redacted-text adoption, SSE parsing), never
-  calls the checkpoint route, and refuses every host except the load-test
-  project and localhost. The "never calls checkpoint" rule exists because bulk
-  load must stay off Qualtrics; with `CHECKPOINT_STORE=s3` on the load-test
-  project that constraint no longer applies, and exercising the route from the
-  harness is a separate decision for the load-test plan.
+  (session, signed history echo, redacted-text adoption, SSE parsing) and
+  refuses every host except the load-test project and localhost. Checkpoint
+  traffic is opt-in through `--checkpoint`; see "Checkpoints" below.
+- `loadtest/snapshot.mjs`: builds the transcript snapshots the checkpoint
+  route validates. `tests/loadtest-snapshot.test.mjs` runs its output through
+  the server's own `validateTranscriptSnapshot`, so a schema change breaks the
+  test rather than a run.
+- `x-loadtest-checkpoint-store` response header on `/api/v2/checkpoint`, set
+  under the same host guard as `x-loadtest-instance`. It names the store the
+  request would write to, and the harness refuses to run unless it reads `s3`.
 
 ## Local run
 
@@ -104,6 +108,52 @@ With `OPENROUTER_API_KEY` exported, the harness reads the account balance
 from openrouter.ai before and after the run and records it under
 `meta.credits` with the spend per successful turn. That is the only call
 the harness makes outside the load-test host.
+
+## Checkpoints
+
+The transcript checkpoint is the third server-side write in a turn, after the
+scrubber and the answer, and it is the highest-volume one: the browser writes
+on submit and again when the answer completes, plus once when the chat ends.
+A 3-turn conversation is 3 chat requests and 7 checkpoint requests, so at 10
+conversations per second the checkpoint route sees 70 writes per second while
+the chat route sees 30.
+
+`--checkpoint off` (the default) keeps the historical behaviour: no checkpoint
+traffic at all, so runs stay comparable with sequences 01 and 02.
+`--checkpoint turn` writes once per completed turn plus the terminal write
+(`turns + 1` per conversation). `--checkpoint full` reproduces the browser
+cadence (`2 * turns + 1`).
+
+Bulk load must never reach the study's Qualtrics account, which is why the
+harness skipped this route until `CHECKPOINT_STORE=s3` existed. `--checkpoint`
+therefore begins with a preflight: one request carrying a valid transcript and
+a deliberately invalid handle. The route selects its store, rejects the handle
+with 409 before writing anything, and returns `x-loadtest-checkpoint-store`.
+The run starts only if that header reads `s3`; a Qualtrics-backed deployment,
+or any host that does not set the header, exits 4 with nothing written. Note
+that `CHECKPOINT_STORE` unset means Qualtrics, so this is not a theoretical
+case -- it is the default.
+
+A checkpoint failure is recorded but does not end the conversation, matching
+the browser, so chat latencies stay measurable. It does mark the conversation
+failed, so `--max-failures` still stops a run whose store has fallen over.
+Watch `creates` in the summary: there should be exactly one per conversation,
+and more means handles were lost and the store holds duplicate rows.
+
+The load-test project needs `LOADTEST_INSTANCE_HEADER=1` (or `PROVIDER_STUB=1`)
+for the header to be emitted at all, on top of `CHECKPOINT_STORE=s3` and the
+three `CHECKPOINT_AWS_*`/`CHECKPOINT_S3_BUCKET` values the writer reads. With
+the flag absent the preflight cannot read the store and refuses the run, which
+is what happens by default after a live-model sequence, since those runs remove
+`PROVIDER_STUB`.
+
+First verified end to end on 2026-09-21 against the live-model load-test
+deployment: one 3-turn conversation produced 7 writes, `creates=1 updates=6`,
+sequences 1 to 7, every checksum matching. Checkpoint time-to-first-byte was
+145 ms p50 warm, 1,410 ms on an instance's first write, against chat turns of
+5.7 s -- cheap per write, but 70 writes per second at the 10 conversations per
+second target, so roughly 12 concurrent checkpoint requests in steady state.
+Request bodies grew 1,954 to 6,052 bytes across the conversation.
 
 `--questions short|long` picks the user-turn text. Against the stub it
 makes no difference. Against the live model it sets answer length and

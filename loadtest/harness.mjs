@@ -17,10 +17,19 @@
 // x-loadtest-instance, the number of distinct function instances seen and
 // the latency split between an instance's first second and its steady state.
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
+import {
+	assistantMessage,
+	newCheckpointContext,
+	serializeSnapshot,
+	snapshotRejection,
+	userMessage,
+	utf8Length
+} from './snapshot.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BASE = 'https://vaccine-chat-loadtest.vercel.app';
@@ -64,12 +73,47 @@ if (args.help === 'true') {
   --max-failures <n>      Stop launching conversations and turns once more than n
                           conversations have failed; in-flight requests drain and
                           results are still written (default: no limit)
+  --checkpoint <mode>     Also drive /api/v2/checkpoint (default off):
+                            off   no checkpoint traffic, as before
+                            turn  one write per completed turn, plus the terminal
+                                  write: turns + 1 per conversation
+                            full  the browser's cadence: user_submitted before
+                                  each turn and assistant_completed after it,
+                                  plus the terminal write: 2*turns + 1
+                          Requires a deployment whose checkpoint store is S3;
+                          the run is refused otherwise (see below).
+  --credits-settle <s>    Seconds to keep polling the OpenRouter balance after
+                          the run before recording spend (default 300, 0 to
+                          take a single immediate reading). See below.
+  --reconcile <path>      Do not run a load test. Re-read the balance now and
+                          rewrite that results file's spend figure from its
+                          recorded opening reading.
 
 Ctrl-C once stops the same way (drain, then write results). Ctrl-C twice
 aborts immediately without results. Exit code 0 = ran to completion,
-3 = stopped early with results written, 130 = aborted. If OPENROUTER_API_KEY is set in the
+3 = stopped early with results written, 130 = aborted, 4 = the checkpoint
+preflight refused the target. If OPENROUTER_API_KEY is set in the
 environment, the account's credit balance is read from openrouter.ai before
 and after the run and recorded under meta.credits.
+
+Spend accounting settles slowly. OpenRouter bills asynchronously, and after
+a large run the endpoint can serve a stale figure for many minutes: on
+2026-09-21 a 5,393-turn run read the same usage immediately after the run
+and again three minutes later, then reported $39 more some minutes after
+that, which was 45% of that run's real cost. Two equal readings are
+therefore not evidence of anything. --credits-settle keeps polling and
+records every sample under meta.credits.samples, and meta.credits.settled
+says whether the figure had stopped moving when the window closed. When it
+reads false, treat the cost as a floor and re-run with --reconcile later;
+the most reliable figure of all is the opening reading of the next run.
+
+Checkpoint safety: with --checkpoint on, the harness first probes
+/api/v2/checkpoint with a deliberately invalid handle. That request is
+rejected after the server has selected its store but before it writes
+anything, and the rejection carries x-loadtest-checkpoint-store. The run
+proceeds only if that header reads "s3". A deployment writing to Qualtrics,
+or any host that does not set the header at all, is refused: bulk load must
+never reach the study's Qualtrics account.
 `);
 	process.exit(0);
 }
@@ -100,6 +144,66 @@ const MAX_FAILURES = args['max-failures'] === undefined ? null : integer(args['m
 if (MAX_FAILURES !== null && !(MAX_FAILURES >= 0)) {
 	console.error('--max-failures must be a non-negative integer');
 	process.exit(2);
+}
+// Bare --checkpoint means the browser-faithful cadence.
+const CHECKPOINT_MODE = args.checkpoint === 'true' ? 'full' : (args.checkpoint ?? 'off');
+if (!['off', 'turn', 'full'].includes(CHECKPOINT_MODE)) {
+	console.error(`Unknown checkpoint mode ${CHECKPOINT_MODE}; use off, turn, or full`);
+	process.exit(2);
+}
+const CREDITS_SETTLE_SECONDS = Math.max(0, integer(args['credits-settle'], 300));
+
+// --reconcile re-costs a finished run from its recorded opening reading. It
+// runs no traffic, so it is handled before the host guard and every other
+// setting. Function declarations below are hoisted, so readCredits is callable.
+if (args.reconcile !== undefined && args.reconcile !== 'true') {
+	const path = resolve(args.reconcile);
+	let report;
+	try {
+		report = JSON.parse(await readFile(path, 'utf8'));
+	} catch (error) {
+		console.error(`Could not read results file ${path}: ${error?.message ?? error}`);
+		process.exit(2);
+	}
+	const before = report?.meta?.credits?.before;
+	if (typeof before?.totalUsage !== 'number') {
+		console.error(`${path} has no opening credits reading to reconcile against`);
+		process.exit(2);
+	}
+	// A later run's opening reading is the correct upper bound: everything the
+	// account was billed between the two belongs to this run, however late it
+	// posted. Without one, "now" is the bound and the figure is only a floor,
+	// since any spend since -- including a later run -- is swept in with it.
+	const bound = await nextRunOpeningReading(dirname(path), before.readAt);
+	const endpoint = bound?.reading ?? (await readCredits());
+	if (typeof endpoint?.totalUsage !== 'number') {
+		console.error(`Could not read the balance now: ${endpoint?.error ?? 'no OPENROUTER_API_KEY'}`);
+		process.exit(2);
+	}
+	const previous = report.meta.credits.spent;
+	const spent = Math.round((endpoint.totalUsage - before.totalUsage) * 10_000) / 10_000;
+	const okTurns = report?.summary?.chat?.ok || 0;
+	report.meta.credits = {
+		...report.meta.credits,
+		after: endpoint,
+		spent,
+		settled: bound ? true : null,
+		boundedBy: bound?.label ?? null,
+		reconciledAt: new Date().toISOString(),
+		supersededSpent: previous ?? null
+	};
+	await writeFile(path, JSON.stringify(report, null, 2));
+	console.log(
+		`${report.meta.label}: spend ${previous === null || previous === undefined ? '(none recorded)' : '$' + previous.toFixed(2)} -> $${spent.toFixed(2)}` +
+			(okTurns ? `  ($${(spent / okTurns).toFixed(4)} per successful turn over ${okTurns})` : '')
+	);
+	console.log(
+		bound
+			? `Bounded by the opening reading of ${bound.label}, so this is the run's full cost.`
+			: 'No later run to bound this against, so it is a floor: any spend since is included, ' +
+					'and late-posting charges may still be missing. Re-run after the next load test.'
+	);
+	process.exit(0);
 }
 
 const ALLOWED_HOST =
@@ -301,6 +405,187 @@ async function errorCode(response) {
 	}
 }
 
+// --- Checkpoints -----------------------------------------------------------------
+// The transcript checkpoint is the third server-side write in a turn, after the
+// scrubber and the answer, and it is the one bulk load used to skip: it went to
+// Qualtrics, which must never see synthetic traffic. With CHECKPOINT_STORE=s3 on
+// the load-test project it can be exercised, and at these arrival rates it is
+// the highest-volume route of the three -- the browser writes twice per turn
+// plus once at the end, so a 3-turn conversation is 3 chat requests and 7
+// checkpoint requests.
+
+const CHECKPOINT_STORE_HEADER = 'x-loadtest-checkpoint-store';
+const sha256Hex = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
+
+/**
+ * Build, send, and validate one checkpoint. Returns a record of the attempt.
+ *
+ * A checkpoint failure does not end the conversation -- the browser records a
+ * capture error and carries on, and truncating the conversation here would bias
+ * the chat latencies this run also measures. The conversation is still marked
+ * failed (once, by its first checkpoint error) so that --max-failures can stop
+ * a run whose checkpoint store has fallen over.
+ */
+async function sendCheckpoint(context, sessionToken, reason, { terminal = false } = {}) {
+	context.snapshotSequence += 1;
+	const nowISO = new Date().toISOString();
+	const attempt = {
+		seq: context.snapshotSequence,
+		reason,
+		operation: context.handle ? 'update' : 'create',
+		startedMs: Math.round(elapsedMs())
+	};
+
+	let serialized;
+	try {
+		serialized = serializeSnapshot(context, {
+			state: terminal ? 'completed' : 'active',
+			chatEndISO: terminal ? nowISO : null,
+			updatedAtISO: nowISO
+		});
+	} catch (error) {
+		attempt.error = String(error?.message ?? error).slice(0, 80);
+		return attempt;
+	}
+
+	const body = JSON.stringify({
+		v: 2,
+		createOperationId: context.createOperationId,
+		snapshotSequence: serialized.snapshot.snapshotSequence,
+		state: serialized.snapshot.state,
+		reasonHint: reason.slice(0, 100),
+		transcriptJson: serialized.json,
+		...(context.handle ? { checkpointHandle: context.handle } : {})
+	});
+	attempt.bytes = utf8Length(body);
+	const rejection = snapshotRejection(serialized, attempt.bytes);
+	if (rejection) {
+		// The browser refuses the turn at this point rather than sending a body
+		// the server will reject; record it without spending a request.
+		attempt.error = rejection;
+		return attempt;
+	}
+
+	let response;
+	let startedAt;
+	let ttfb;
+	try {
+		({ response, startedAt, ttfb } = await timedFetch(`${BASE}/api/v2/checkpoint`, {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				authorization: `Bearer ${sessionToken}`
+			},
+			body
+		}));
+	} catch (error) {
+		const cause = error?.cause;
+		const code = cause?.code ?? cause?.errors?.find((e) => e?.code)?.code;
+		attempt.error =
+			error?.name === 'TimeoutError'
+				? 'client_timeout'
+				: `client_${String(code ?? error?.message ?? error).slice(0, 80)}`;
+		return attempt;
+	}
+
+	attempt.status = response.status;
+	attempt.ttfb = Math.round(ttfb);
+	attempt.instance = noteInstance(response.headers, 'checkpoint');
+	attempt.store = response.headers.get(CHECKPOINT_STORE_HEADER);
+	attempt.vercelId = response.headers.get('x-vercel-id');
+	if (!response.ok) {
+		attempt.error = await errorCode(response);
+		attempt.total = Math.round(performance.now() - startedAt);
+		return attempt;
+	}
+
+	const acknowledged = await response.json().catch(() => null);
+	attempt.total = Math.round(performance.now() - startedAt);
+	if (
+		acknowledged?.v !== 2 ||
+		typeof acknowledged.checkpointHandle !== 'string' ||
+		acknowledged.acknowledgedSequence !== serialized.snapshot.snapshotSequence
+	) {
+		attempt.error = 'invalid_ack';
+		return attempt;
+	}
+	// The store returns the digest of the exact transcript it persisted. A
+	// mismatch means the row does not hold what this conversation sent, which no
+	// status code would reveal.
+	if (acknowledged.checksum !== sha256Hex(serialized.json)) {
+		attempt.error = 'checksum_mismatch';
+		return attempt;
+	}
+	context.handle = acknowledged.checkpointHandle;
+	context.acknowledgedSequence = acknowledged.acknowledgedSequence;
+	return attempt;
+}
+
+/**
+ * Prove the target writes checkpoints to S3 before sending any.
+ *
+ * The probe carries a valid transcript and a junk handle. The route selects its
+ * store, then rejects the handle with 409 before touching the store, so this
+ * costs one request and writes nothing -- including on a deployment that would
+ * have written to Qualtrics, which is the case this exists to catch.
+ */
+async function verifyCheckpointStore() {
+	const sessionResponse = await fetch(`${BASE}/api/v2/session/${ARM}`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ v: 2, chatSessionKey: uuid(), attemptNonce: uuid() }),
+		signal: AbortSignal.timeout(TIMEOUT_MS)
+	});
+	if (!sessionResponse.ok) {
+		return { ok: false, detail: `session returned ${await errorCode(sessionResponse)}` };
+	}
+	const session = await sessionResponse.json();
+	const context = newCheckpointContext(session, uuid(), new Date().toISOString());
+	context.snapshotSequence += 1;
+	const serialized = serializeSnapshot(context, {
+		state: 'active',
+		chatEndISO: null,
+		updatedAtISO: new Date().toISOString()
+	});
+	const response = await fetch(`${BASE}/api/v2/checkpoint`, {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json',
+			authorization: `Bearer ${session.sessionToken}`
+		},
+		body: JSON.stringify({
+			v: 2,
+			createOperationId: context.createOperationId,
+			snapshotSequence: serialized.snapshot.snapshotSequence,
+			state: 'active',
+			reasonHint: 'loadtest_store_probe',
+			transcriptJson: serialized.json,
+			checkpointHandle: 'loadtest-store-probe-not-a-real-handle'
+		}),
+		signal: AbortSignal.timeout(TIMEOUT_MS)
+	});
+	const store = response.headers.get(CHECKPOINT_STORE_HEADER);
+	const code = response.ok ? `http_${response.status}` : await errorCode(response);
+	if (store === 's3') return { ok: true, store, code };
+	if (store === null) {
+		return {
+			ok: false,
+			code,
+			detail:
+				`no ${CHECKPOINT_STORE_HEADER} header, so the store cannot be confirmed. The header ` +
+				'needs PROVIDER_STUB=1 or LOADTEST_INSTANCE_HEADER=1, and a host the loadtest policy ' +
+				'allows (the Vite dev server, or the load-test Vercel project).'
+		};
+	}
+	return {
+		ok: false,
+		code,
+		detail:
+			`checkpoint store is "${store}", not "s3". Bulk checkpoint load must not reach Qualtrics. ` +
+			'Set CHECKPOINT_STORE=s3 on the load-test project and redeploy.'
+	};
+}
+
 // --- One conversation ------------------------------------------------------------
 
 let conversationsStarted = 0;
@@ -366,6 +651,88 @@ async function readCredits() {
 	}
 }
 
+/**
+ * The opening credits reading of the earliest run that started after `afterISO`.
+ *
+ * Used to bound a reconciliation: whatever the account was billed between one
+ * run's opening reading and the next run's belongs to the first run, no matter
+ * how late OpenRouter posted it. Runs that overlap in time cannot be separated
+ * this way and are skipped by the caller's own ordering.
+ */
+async function nextRunOpeningReading(directory, afterISO) {
+	let files;
+	try {
+		files = await readdir(directory);
+	} catch {
+		return null;
+	}
+	let best = null;
+	for (const file of files) {
+		if (!file.endsWith('.json')) continue;
+		let other;
+		try {
+			other = JSON.parse(await readFile(resolve(directory, file), 'utf8'));
+		} catch {
+			continue;
+		}
+		const reading = other?.meta?.credits?.before;
+		if (typeof reading?.totalUsage !== 'number' || typeof reading.readAt !== 'string') continue;
+		if (!(reading.readAt > afterISO)) continue;
+		if (best === null || reading.readAt < best.reading.readAt) {
+			best = { label: other.meta.label ?? file, reading };
+		}
+	}
+	return best;
+}
+
+/**
+ * Poll the balance after the run until the account's usage stops moving.
+ *
+ * OpenRouter bills asynchronously and the endpoint serves a stale figure while
+ * it catches up, so a single post-run read reports whatever has been posted so
+ * far rather than what the run cost. Worse, the stale value is stable: on
+ * 2026-09-21 a 5,393-turn run read identical usage at t+0 and t+3 min, then
+ * grew by $39 (45% of its real cost) some minutes later. So "two equal reads"
+ * cannot be the stopping rule, and this polls the whole window instead,
+ * reporting honestly whether the number was still moving when it gave up.
+ */
+async function settleCredits(seconds, intervalMs = 30_000) {
+	const first = await readCredits();
+	if (seconds <= 0 || typeof first?.totalUsage !== 'number') {
+		return { final: first, samples: first ? [first] : [], settled: seconds <= 0 ? null : false };
+	}
+	const samples = [first];
+	const deadline = Date.now() + seconds * 1_000;
+	let lastChangeAt = Date.now();
+	console.error(
+		`settling spend: polling the balance for up to ${seconds}s ` +
+			'(OpenRouter posts usage asynchronously; --credits-settle 0 skips this)'
+	);
+	while (Date.now() < deadline) {
+		await sleep(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
+		const sample = await readCredits();
+		if (typeof sample?.totalUsage !== 'number') continue;
+		const previous = samples.at(-1);
+		if (sample.totalUsage !== previous.totalUsage) {
+			lastChangeAt = Date.now();
+			console.error(
+				`  usage ${previous.totalUsage.toFixed(4)} -> ${sample.totalUsage.toFixed(4)} ` +
+					`(+$${(sample.totalUsage - previous.totalUsage).toFixed(2)})`
+			);
+		}
+		samples.push(sample);
+	}
+	// Quiet for at least half the window, and never on the strength of a single
+	// repeated reading: the stale value that misreported the 2026-09-21 run held
+	// steady for three minutes before it moved.
+	const quietMs = Date.now() - lastChangeAt;
+	return {
+		final: samples.at(-1),
+		samples,
+		settled: samples.length >= 3 && quietMs >= Math.min(seconds * 500, 120_000)
+	};
+}
+
 async function conversation(index) {
 	const record = {
 		index,
@@ -373,7 +740,16 @@ async function conversation(index) {
 		page: null,
 		session: null,
 		turns: [],
+		checkpoints: [],
 		error: null
+	};
+	// A checkpoint failure is recorded and the conversation continues, as it
+	// does in the browser; the first one still marks the conversation failed so
+	// the stop switch sees a failing store.
+	const noteCheckpoint = (attempt) => {
+		record.checkpoints.push(attempt);
+		if (attempt.error && !record.error) record.error = `checkpoint_${attempt.error}`;
+		return attempt;
 	};
 	conversationsStarted += 1;
 	try {
@@ -413,6 +789,11 @@ async function conversation(index) {
 		record.session.total = Math.round(performance.now() - sessionRequest.startedAt);
 		record.session.configVersion = session.configVersion;
 
+		const checkpoints =
+			CHECKPOINT_MODE === 'off'
+				? null
+				: newCheckpointContext(session, uuid(), new Date().toISOString());
+
 		let history = [];
 		let historyTag = session.historyTag;
 		for (let sequence = 1; sequence <= TURNS; sequence += 1) {
@@ -423,9 +804,15 @@ async function conversation(index) {
 				break;
 			}
 			const turnId = uuid();
-			const userMessage = QUESTIONS[(index + sequence) % QUESTIONS.length];
+			const question = QUESTIONS[(index + sequence) % QUESTIONS.length];
 			const turn = { seq: sequence, startedMs: Math.round(elapsedMs()) };
 			record.turns.push(turn);
+			// The browser checkpoints on submit, before the answer exists. The
+			// snapshot excludes the in-flight turn (its raw text has not been
+			// redacted yet), so this write carries the conversation as it stood.
+			if (checkpoints && CHECKPOINT_MODE === 'full') {
+				noteCheckpoint(await sendCheckpoint(checkpoints, session.sessionToken, 'user_submitted'));
+			}
 			const { response, startedAt, ttfb } = await timedFetch(`${BASE}/api/v2/chat`, {
 				method: 'POST',
 				headers: {
@@ -438,7 +825,7 @@ async function conversation(index) {
 					sequence,
 					history,
 					historyTag,
-					turn: { id: turnId, userMessage }
+					turn: { id: turnId, userMessage: question }
 				})
 			});
 			turn.status = response.status;
@@ -463,14 +850,39 @@ async function conversation(index) {
 			}
 			// The signed history covers the exact redacted user text and the
 			// exact assistant text, so both are echoed verbatim on the next turn.
-			const canonical = sse.scrubbed ?? userMessage;
-			turn.scrubbed = canonical !== userMessage;
+			const canonical = sse.scrubbed ?? question;
+			turn.scrubbed = canonical !== question;
 			history = [
 				...history,
 				{ id: turnId, role: 'user', content: canonical },
 				{ id: sse.done.assistantMessageId, role: 'assistant', content: sse.text }
 			];
 			historyTag = sse.done.historyTag;
+
+			// The transcript stores the redacted user text, never the raw text.
+			if (checkpoints) {
+				const atISO = new Date().toISOString();
+				checkpoints.messages.push(
+					userMessage({ id: turnId, turnId, content: canonical, createdAtISO: atISO }),
+					assistantMessage({
+						id: sse.done.assistantMessageId,
+						turnId,
+						content: sse.text,
+						createdAtISO: atISO
+					})
+				);
+				noteCheckpoint(
+					await sendCheckpoint(checkpoints, session.sessionToken, 'assistant_completed')
+				);
+			}
+		}
+
+		// End of chat. The browser writes a terminal snapshot whenever the
+		// participant leaves, which for a completed conversation is this one.
+		if (checkpoints) {
+			noteCheckpoint(
+				await sendCheckpoint(checkpoints, session.sessionToken, 'completed', { terminal: true })
+			);
 		}
 		return record;
 	} catch (error) {
@@ -545,13 +957,16 @@ function summarize(results) {
 	const sessions = conversations.map((c) => c.session).filter(Boolean);
 	const turns = conversations.flatMap((c) => c.turns);
 	const okTurns = turns.filter((t) => !t.error && t.total !== undefined);
+	const checkpoints = conversations.flatMap((c) => c.checkpoints ?? []);
+	const okCheckpoints = checkpoints.filter((a) => !a.error);
 	const errors = {};
 	for (const c of conversations) if (c.error) errors[c.error] = (errors[c.error] ?? 0) + 1;
 
 	const instanceRequests = [
 		...pages.map((p) => ({ kind: 'page', ms: p.ttfb, instance: p.instance })),
 		...sessions.map((s) => ({ kind: 'session', ms: s.ttfb, instance: s.instance })),
-		...okTurns.map((t) => ({ kind: 'chat', ms: t.firstByte, instance: t.instance }))
+		...okTurns.map((t) => ({ kind: 'chat', ms: t.firstByte, instance: t.instance })),
+		...okCheckpoints.map((a) => ({ kind: 'checkpoint', ms: a.ttfb, instance: a.instance }))
 	].filter((r) => r.instance);
 	// Three buckets per phase: the instance's very first request, the first
 	// request of this route on an already-used instance, and everything else.
@@ -595,6 +1010,25 @@ function summarize(results) {
 			answerChars: percentiles(okTurns.map((t) => t.chars)),
 			scrubbedTurns: okTurns.filter((t) => t.scrubbed).length
 		},
+		checkpoint:
+			CHECKPOINT_MODE === 'off'
+				? null
+				: {
+						mode: CHECKPOINT_MODE,
+						attempted: checkpoints.length,
+						ok: okCheckpoints.length,
+						failed: checkpoints.length - okCheckpoints.length,
+						errors: countBy(checkpoints.filter((a) => a.error).map((a) => a.error)),
+						// One create per conversation; every later write is an update
+						// against the signed handle. More creates than conversations
+						// means handles were lost and rows duplicated.
+						creates: okCheckpoints.filter((a) => a.operation === 'create').length,
+						updates: okCheckpoints.filter((a) => a.operation === 'update').length,
+						stores: countBy(checkpoints.map((a) => a.store).filter(Boolean)),
+						ttfbMs: percentiles(okCheckpoints.map((a) => a.ttfb)),
+						totalMs: percentiles(okCheckpoints.map((a) => a.total)),
+						requestBytes: percentiles(checkpoints.map((a) => a.bytes))
+					},
 		instances:
 			instances.size === 0
 				? null
@@ -605,7 +1039,8 @@ function summarize(results) {
 						routeFirstRequests: instanceRequests.filter((r) => bucketOf(r) === 'routeFirst').length,
 						pageTtfb: split('page'),
 						sessionTtfb: split('session'),
-						chatFirstByte: split('chat')
+						chatFirstByte: split('chat'),
+						checkpointTtfb: split('checkpoint')
 					}
 	};
 }
@@ -632,6 +1067,8 @@ function timeline(results) {
 				turnsDone: 0,
 				chatFirstByte: [],
 				chatTotal: [],
+				checkpointsDone: 0,
+				checkpointTotal: [],
 				errors: 0,
 				newInstances: 0
 			};
@@ -652,6 +1089,12 @@ function timeline(results) {
 			b.turnsDone += 1;
 			b.chatFirstByte.push(t.firstByte);
 			b.chatTotal.push(t.total);
+		}
+		for (const a of c.checkpoints ?? []) {
+			if (a.error || a.total === undefined) continue;
+			const b = get(a.startedMs + a.total);
+			b.checkpointsDone += 1;
+			b.checkpointTotal.push(a.total);
 		}
 		if (c.error) get(c.endedMs).errors += 1;
 	}
@@ -676,6 +1119,8 @@ function timeline(results) {
 			turnsDone: b.turnsDone,
 			chatFirstByteP50: percentiles(b.chatFirstByte)?.p50 ?? null,
 			chatTotalP50: percentiles(b.chatTotal)?.p50 ?? null,
+			checkpointsDone: b.checkpointsDone,
+			checkpointTotalP50: percentiles(b.checkpointTotal)?.p50 ?? null,
 			errors: b.errors,
 			newInstances: b.newInstances,
 			genLoopLagP99Ms: generatorByBucket.get(b.t)?.loopLagP99Ms ?? null,
@@ -693,9 +1138,10 @@ function printSummary(summary, rows) {
 	console.log('');
 	console.log(`== ${LABEL} ==  ${BASE}  arm=${ARM}  conversations=${N}  turns=${TURNS}`);
 	console.log(
-		RATE
+		(RATE
 			? `mode=open-loop rate=${RATE}/s`
-			: `mode=closed-loop concurrency=${CONCURRENCY} ramp=${RAMP_SECONDS}s`
+			: `mode=closed-loop concurrency=${CONCURRENCY} ramp=${RAMP_SECONDS}s`) +
+			`  checkpoint=${CHECKPOINT_MODE}`
 	);
 	console.log(`conversations ok=${c.ok} failed=${c.failed} errors=${JSON.stringify(c.errors)}`);
 	if (PAGE) console.log(`page ttfb (ms)      ${formatPct(summary.page.ttfbMs)}`);
@@ -707,6 +1153,22 @@ function printSummary(summary, rows) {
 	console.log(
 		`chat turns ok=${summary.chat.ok} failed=${summary.chat.failed} errors=${JSON.stringify(summary.chat.errors)}`
 	);
+	if (summary.checkpoint) {
+		const k = summary.checkpoint;
+		console.log(`ckpt ttfb (ms)      ${formatPct(k.ttfbMs)}`);
+		console.log(`ckpt total (ms)     ${formatPct(k.totalMs)}`);
+		console.log(`ckpt req bytes      ${formatPct(k.requestBytes)}`);
+		console.log(
+			`checkpoints mode=${k.mode} ok=${k.ok} failed=${k.failed} creates=${k.creates} updates=${k.updates} ` +
+				`stores=${JSON.stringify(k.stores)} errors=${JSON.stringify(k.errors)}`
+		);
+		if (k.creates > summary.conversations.completed) {
+			console.log(
+				`  <-- ${k.creates} creates for ${summary.conversations.completed} conversations: ` +
+					'handles were lost, so the store holds duplicate rows'
+			);
+		}
+	}
 	if (summary.instances) {
 		const i = summary.instances;
 		console.log(
@@ -716,9 +1178,11 @@ function printSummary(summary, rows) {
 		for (const [label, phase] of [
 			['page ttfb', i.pageTtfb],
 			['session ttfb', i.sessionTtfb],
-			['chat first byte', i.chatFirstByte]
+			['chat first byte', i.chatFirstByte],
+			['checkpoint ttfb', i.checkpointTtfb]
 		]) {
 			if (label === 'page ttfb' && !PAGE) continue;
+			if (label === 'checkpoint ttfb' && CHECKPOINT_MODE === 'off') continue;
 			console.log(`  ${label.padEnd(16)} cold        ${formatPct(phase.cold)}`);
 			console.log(`  ${''.padEnd(16)} routeFirst  ${formatPct(phase.routeFirst)}`);
 			console.log(`  ${''.padEnd(16)} warm        ${formatPct(phase.warm)}`);
@@ -739,7 +1203,11 @@ function printSummary(summary, rows) {
 		);
 	}
 	console.log('');
-	console.log('t(s)   started sessDone sessP50 turnsDone chatFBp50 chatTotP50 errors newInst genLag genCPU');
+	console.log(
+		't(s)   started sessDone sessP50 turnsDone chatFBp50 chatTotP50' +
+			(CHECKPOINT_MODE === 'off' ? '' : ' ckptDone ckptP50') +
+			' errors newInst genLag genCPU'
+	);
 	for (const r of rows) {
 		console.log(
 			[
@@ -750,6 +1218,9 @@ function printSummary(summary, rows) {
 				String(r.turnsDone).padStart(9),
 				String(r.chatFirstByteP50 ?? '-').padStart(9),
 				String(r.chatTotalP50 ?? '-').padStart(10),
+				...(CHECKPOINT_MODE === 'off'
+					? []
+					: [String(r.checkpointsDone).padStart(8), String(r.checkpointTotalP50 ?? '-').padStart(7)]),
 				String(r.errors).padStart(6),
 				String(r.newInstances).padStart(7),
 				String(r.genLoopLagP99Ms ?? '-').padStart(6),
@@ -762,6 +1233,22 @@ function printSummary(summary, rows) {
 // --- Main ------------------------------------------------------------------------
 
 const results = new Array(N);
+
+// Refuse the run rather than discover mid-flight that thousands of synthetic
+// transcripts are landing in the study's Qualtrics account.
+let checkpointProbe = null;
+if (CHECKPOINT_MODE !== 'off') {
+	checkpointProbe = await verifyCheckpointStore();
+	if (!checkpointProbe.ok) {
+		console.error(`\nrefusing to send checkpoints to ${BASE}: ${checkpointProbe.detail}`);
+		if (checkpointProbe.code) console.error(`(store probe was answered with ${checkpointProbe.code})`);
+		process.exit(4);
+	}
+	console.error(
+		`checkpoint store confirmed: s3 (probe rejected as ${checkpointProbe.code}, nothing written)`
+	);
+}
+
 const creditsBefore = await readCredits();
 if (creditsBefore?.balance !== undefined) console.error(`credits before: $${creditsBefore.balance.toFixed(2)}`);
 const progress = setInterval(() => {
@@ -784,16 +1271,21 @@ const summary = summarize(results);
 const rows = timeline(results);
 printSummary(summary, rows);
 
-const creditsAfter = await readCredits();
+const settledCredits = creditsBefore ? await settleCredits(CREDITS_SETTLE_SECONDS) : null;
+const creditsAfter = settledCredits?.final ?? null;
 const credits =
 	creditsBefore || creditsAfter
 		? {
 				before: creditsBefore,
 				after: creditsAfter,
+				// From totalUsage, not the rounded balance: usage is full precision
+				// and stays correct if the account is topped up mid-run.
 				spent:
-					creditsBefore?.balance !== undefined && creditsAfter?.balance !== undefined
-						? Math.round((creditsBefore.balance - creditsAfter.balance) * 100) / 100
-						: null
+					typeof creditsBefore?.totalUsage === 'number' && typeof creditsAfter?.totalUsage === 'number'
+						? Math.round((creditsAfter.totalUsage - creditsBefore.totalUsage) * 10_000) / 10_000
+						: null,
+				settled: settledCredits?.settled ?? null,
+				samples: settledCredits?.samples ?? []
 			}
 		: null;
 if (credits?.spent !== null && credits?.spent !== undefined) {
@@ -802,6 +1294,12 @@ if (credits?.spent !== null && credits?.spent !== undefined) {
 		`credits: $${creditsBefore.balance.toFixed(2)} -> $${creditsAfter.balance.toFixed(2)}  spent $${credits.spent.toFixed(2)}` +
 			(okTurns ? `  ($${(credits.spent / okTurns).toFixed(4)} per successful turn)` : '')
 	);
+	if (credits.settled === false) {
+		console.log(
+			`  <-- spend was still moving when the ${CREDITS_SETTLE_SECONDS}s window closed: treat $${credits.spent.toFixed(2)} as a floor.`
+		);
+		console.log(`      reconcile later with: node loadtest/harness.mjs --reconcile ${OUT}`);
+	}
 }
 if (stopReason) {
 	console.log(
@@ -822,6 +1320,10 @@ const report = {
 		questions: QUESTION_SET,
 		thinkMs: THINK_MS,
 		page: PAGE,
+		checkpoint:
+			CHECKPOINT_MODE === 'off'
+				? { mode: 'off' }
+				: { mode: CHECKPOINT_MODE, store: checkpointProbe.store, probeCode: checkpointProbe.code },
 		mode: RATE ? { openLoop: true, ratePerSecond: RATE } : { closedLoop: true, concurrency: CONCURRENCY, rampSeconds: RAMP_SECONDS },
 		maxFailures: MAX_FAILURES,
 		stop: stopReason

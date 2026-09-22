@@ -15,6 +15,7 @@ import {
 	V2HttpError
 } from '$lib/server/v2/http';
 import { MAX_CHECKPOINT_REQUEST_BYTES, MAX_TRANSCRIPT_UTF8_BYTES } from '$lib/server/v2/limits';
+import { loadtestPolicy } from '$lib/server/v2/loadtestStub';
 import {
 	checkpointEmbeddedData,
 	createQualtricsCheckpoint,
@@ -37,6 +38,14 @@ import {
 	type CheckpointHandleClaims
 } from '$lib/server/v2/tokens';
 import type { RequestHandler } from './$types';
+
+// Load-test instrumentation only, under the same host guard as
+// x-loadtest-instance: absent on the study production project, so a generator
+// that requires it cannot be pointed at a Qualtrics-backed deployment by
+// accident. Bulk checkpoint load must reach S3, never Qualtrics.
+function storeHeader(store: CheckpointStoreKind | 'unselected'): Record<string, string> | undefined {
+	return loadtestPolicy().instanceHeader ? { 'x-loadtest-checkpoint-store': store } : undefined;
+}
 
 export const POST: RequestHandler = async ({ request }) => {
 	let secret: string;
@@ -165,12 +174,16 @@ export const POST: RequestHandler = async ({ request }) => {
 			},
 			'v2 checkpoint stored'
 		);
-		return jsonResponse({
-			v: 2,
-			checkpointHandle,
-			acknowledgedSequence: body.snapshotSequence,
-			checksum
-		});
+		return jsonResponse(
+			{
+				v: 2,
+				checkpointHandle,
+				acknowledgedSequence: body.snapshotSequence,
+				checksum
+			},
+			200,
+			storeHeader(store)
+		);
 	} catch (error) {
 		if (error instanceof CheckpointStoreError) {
 			const fields = {
@@ -203,10 +216,21 @@ export const POST: RequestHandler = async ({ request }) => {
 					}
 				},
 				error.status,
-				error.retryAfter ? { 'retry-after': error.retryAfter } : undefined
+				{
+					...storeHeader(store),
+					...(error.retryAfter ? { 'retry-after': error.retryAfter } : {})
+				}
 			);
 		}
 		if (!(error instanceof V2HttpError)) logger.error(error, 'v2 checkpoint: unexpected request failure');
-		return errorResponse(error);
+		const response = errorResponse(error);
+		// A rejection raised after the store was selected still reports which
+		// store it would have written to. The load generator uses exactly that:
+		// it probes with an invalid handle, which is refused here before any
+		// upstream write, and reads the store from this response.
+		for (const [name, value] of Object.entries(storeHeader(store) ?? {})) {
+			response.headers.set(name, value);
+		}
+		return response;
 	}
 };
