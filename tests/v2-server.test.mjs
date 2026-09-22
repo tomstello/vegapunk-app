@@ -114,12 +114,6 @@ const V11_CONFIG_HASHES = Object.freeze({
 	covid: '813b423e037ea0be53113c8da263a2acb4f87be2bab6fb0601e227513e17245d',
 	combo: '6dec375840c54f3a0dea90d32aab3ffde6cdcf64d17b9297df211bdf67689bfa'
 });
-// v12 = v11 with max_tokens cut 6000 -> 4000 (ADO 12588, 2026-09-22).
-const V12_CONFIG_HASHES = Object.freeze({
-	flu: 'f37bcbdcda7aa29e06beb405b528328dc20a7f1a661dcb106010ae4ab8b6a3fb',
-	covid: 'aa8ded3194a2dcc3eccc0a746f67d28e236a3b3412df3d6e29861fdf81791c94',
-	combo: 'fe2ef5e361c0c3bc72fa1673536b820bbb0310e1cb16dae54f3981d3e429f020'
-});
 const V7_CONFIG_HASHES = Object.freeze({
 	flu: '0da70cec1ff637fa73b9108b678c6a18503e56abeb57f5d04cf0a184c76e9bda',
 	covid: '5444d5f3d12a91384ba427d3e84baf0c5361c631dd09d0eb713a17f373a5c5b7',
@@ -294,8 +288,8 @@ test('fixed registry exposes public UI but not the prompt or provider configurat
 		const config = configs.getStudyConfig(arm);
 		const publicConfig = configs.getPublicStudyConfig(config);
 		assert.equal(config.condition, arm);
-		assert.equal(config.configVersion, `albertsons-2026-${arm}-v12`);
-		assert.equal(config.configHash, V12_CONFIG_HASHES[arm]);
+		assert.equal(config.configVersion, `albertsons-2026-${arm}-v11`);
+		assert.equal(config.configHash, V11_CONFIG_HASHES[arm]);
 		assert.deepEqual(publicConfig.ui.appointmentCta, {
 			label: 'Schedule now',
 			url: 'https://www.albertsons.com/health/appointments/home'
@@ -519,7 +513,7 @@ test('402 and 429 bodies keep a bounded upstream message; other statuses keep no
 	}
 });
 
-test('v12 sends max_tokens 4000 on the answer call; v11 sent 6000; v10 and earlier send none', async () => {
+test('v11 sends max_tokens on the answer call; v10 and earlier send none', async () => {
 	const originalFetch = globalThis.fetch;
 	const bodies = [];
 	const providerSse =
@@ -533,8 +527,7 @@ test('v12 sends max_tokens 4000 on the answer call; v11 sent 6000; v10 and earli
 		for (const config of [
 			configs.getStudyConfig('flu'),
 			configs.getStudyConfig('demo'),
-			configs.getStudyConfigRevision('flu', 'albertsons-2026-flu-v10', V10_CONFIG_HASHES.flu),
-			configs.getStudyConfigRevision('flu', 'albertsons-2026-flu-v11', V11_CONFIG_HASHES.flu)
+			configs.getStudyConfigRevision('flu', 'albertsons-2026-flu-v10', V10_CONFIG_HASHES.flu)
 		]) {
 			assert.ok(config);
 			const stream = await openrouter.startOpenRouterStream({
@@ -547,15 +540,12 @@ test('v12 sends max_tokens 4000 on the answer call; v11 sent 6000; v10 and earli
 			});
 			stream.cancel();
 		}
-		assert.equal(bodies[0].max_tokens, 4_000, 'active flu revision sends the v12 ceiling');
-		assert.equal(bodies[1].max_tokens, 4_000, 'active demo revision sends the v12 ceiling');
+		assert.equal(bodies[0].max_tokens, 6_000, 'active flu revision sends max_tokens');
+		assert.equal(bodies[1].max_tokens, 6_000, 'active demo revision sends max_tokens');
 		assert.equal('max_tokens' in bodies[2], false, 'retained v10 sends no max_tokens');
-		assert.equal(bodies[3].max_tokens, 6_000, 'retained v11 keeps its own ceiling');
-		// max_tokens is the only thing that differs across v10, v11 and v12.
-		const { max_tokens: _v12Omitted, ...v12Rest } = bodies[0];
-		const { max_tokens: _v11Omitted, ...v11Rest } = bodies[3];
-		assert.deepEqual(v12Rest, bodies[2]);
-		assert.deepEqual(v12Rest, v11Rest);
+		// Everything else in the request is unchanged between v10 and v11.
+		const { max_tokens: _omitted, ...v11Rest } = bodies[0];
+		assert.deepEqual(v11Rest, bodies[2]);
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
@@ -581,23 +571,15 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 			allow_fallbacks: true,
 			require_parameters: true
 		});
-		assert.equal(active.configVersion, `albertsons-2026-${arm}-v12`);
-		assert.equal(active.configHash, V12_CONFIG_HASHES[arm]);
+		assert.equal(active.configVersion, `albertsons-2026-${arm}-v11`);
+		assert.equal(active.configHash, V11_CONFIG_HASHES[arm]);
 		assert.equal(active.model.name, 'anthropic/claude-opus-5');
 		assert.deepEqual(active.model.reasoning, { effort: 'low', exclude: true });
-		// max_tokens bounds OpenRouter's pre-flight credit hold, which is what
-		// refuses admission with a 402 under load. v11 kept it above the app's own
-		// 16,000 code-point capture cap so the provider could never truncate
-		// first; v12 deliberately drops below that, making the provider cap the
-		// binding one, because the hold was ~11x what a turn actually generates.
-		// The floor that matters now is measured output: across 20 sampled
-		// generations completion averaged 546 native tokens and peaked at 823
-		// (reasoning, excluded from output but inside max_tokens, averaged 24).
-		assert.equal(active.model.maxTokens, 4_000);
-		assert.ok(
-			active.model.maxTokens >= 4 * 823,
-			'max_tokens must stay several times the largest completion ever measured'
-		);
+		// v11: max_tokens bounds OpenRouter's pre-flight credit hold. It must sit
+		// above the app's own 16,000 code-point capture cap so it never fires
+		// first on a real answer.
+		assert.equal(active.model.maxTokens, 6_000);
+		assert.ok(active.model.maxTokens > active.runtimePolicy.maxAssistantCodePoints / 4);
 		assert.equal(active.runtimePolicy.providerMaxAttempts, 1);
 
 		// v10 (no max_tokens) stays resumable and hash-stable for in-flight sessions.
@@ -609,16 +591,6 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 		assert.ok(previousV10, `${arm} prior v10 revision must remain resumable`);
 		assert.equal('maxTokens' in previousV10.model, false);
 		assert.equal(previousV10.systemPrompt, active.systemPrompt);
-
-		// v11 likewise: sessions issued before the v12 deploy keep their 6,000.
-		const previousV11 = configs.getStudyConfigRevision(
-			arm,
-			`albertsons-2026-${arm}-v11`,
-			V11_CONFIG_HASHES[arm]
-		);
-		assert.ok(previousV11, `${arm} prior v11 revision must remain resumable`);
-		assert.equal(previousV11.model.maxTokens, 6_000);
-		assert.equal(previousV11.systemPrompt, active.systemPrompt);
 		assert.equal(active.ui.themeId, 'albertsons-v1');
 		assert.deepEqual(active.ui.suggestedQuestions, V5_SUGGESTED_QUESTIONS[arm]);
 		// v7 adds the redaction screen. Primary = Gemini 3.1 Flash Lite
