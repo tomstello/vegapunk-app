@@ -1,4 +1,5 @@
 import { isAllowedRequestOrigin } from '$lib/server/requestOrigin';
+import { env } from '$env/dynamic/private';
 import type { ChatMessageType, ChatParamsType } from '$lib/chatParams';
 import { logger } from '$lib/logger';
 import { processMessages } from '$lib/messages';
@@ -49,6 +50,12 @@ const ChatRequestSchema = z.object({
 // $lib/server/requestOrigin (shared with /api/checkpoint).
 
 export const POST: RequestHandler = (async ({ request, url }): Promise<Response> => {
+    if (env.ENABLE_LEGACY_V1 !== 'true') {
+        return new Response(
+            JSON.stringify({ error: 'legacy_protocol_retired', replacement: '/api/v2/chat' }),
+            { status: 410, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } }
+        );
+    }
     console.log("\n\n\n\n\n")
     logger.info(`=========== ${new Date().toISOString()} ======================`);
     try {
@@ -255,6 +262,5 @@ async function handleGeneratedResponse(provider: any, chatParams: ChatParamsType
     logger.debug("=============================================")
     return generateResponse(messages, assistantText);
 }
-
 
 
