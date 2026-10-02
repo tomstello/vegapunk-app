@@ -1,0 +1,38 @@
+name: Validate application
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Tests, types, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Build-only synthetic origin; never a production environment setting.
+      PUBLIC_QUALTRICS_PARENT_ORIGINS: https://survey.example.test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+
+# No deployment job and no provider or production credentials. Code validation
+# must not silently promote a research configuration or deploy to Vercel.

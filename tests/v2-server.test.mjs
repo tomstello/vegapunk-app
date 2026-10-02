@@ -120,6 +120,15 @@ const V12_CONFIG_HASHES = Object.freeze({
 	covid: 'aa8ded3194a2dcc3eccc0a746f67d28e236a3b3412df3d6e29861fdf81791c94',
 	combo: 'fe2ef5e361c0c3bc72fa1673536b820bbb0310e1cb16dae54f3981d3e429f020'
 });
+const V13_CONFIG_HASHES = Object.freeze({
+	flu: 'cc90887085aeee0d9a18e69045b9b4a7408311f00909a3dbaac6d88cf9cd0754',
+	covid: '241aeec9ffa2d6b4f08c00b98ef4c3b71d6df7a748c80a7df313fec92b0cb6ad',
+	combo: 'c9b64b63ffb41b914a70ac677ceb08e670b513294a094e5d7053c273ab0346a8'
+});
+const V13_SCRUB_CATEGORIES = Object.freeze([
+	'NAME', 'ADDRESS', 'DATES', 'PHONE', 'FAX', 'EMAIL', 'SSN', 'MRN', 'HPBN',
+	'ACCOUNT', 'LICENSE', 'VEHICLE', 'DEVICE', 'URL', 'IP', 'BIOMETRIC', 'PHOTO', 'ID'
+]);
 const V7_CONFIG_HASHES = Object.freeze({
 	flu: '0da70cec1ff637fa73b9108b678c6a18503e56abeb57f5d04cf0a184c76e9bda',
 	covid: '5444d5f3d12a91384ba427d3e84baf0c5361c631dd09d0eb713a17f373a5c5b7',
@@ -294,8 +303,8 @@ test('fixed registry exposes public UI but not the prompt or provider configurat
 		const config = configs.getStudyConfig(arm);
 		const publicConfig = configs.getPublicStudyConfig(config);
 		assert.equal(config.condition, arm);
-		assert.equal(config.configVersion, `albertsons-2026-${arm}-v12`);
-		assert.equal(config.configHash, V12_CONFIG_HASHES[arm]);
+		assert.equal(config.configVersion, `albertsons-2026-${arm}-v13`);
+		assert.equal(config.configHash, V13_CONFIG_HASHES[arm]);
 		assert.deepEqual(publicConfig.ui.appointmentCta, {
 			label: 'Schedule now',
 			url: 'https://www.albertsons.com/health/appointments/home'
@@ -581,8 +590,8 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 			allow_fallbacks: true,
 			require_parameters: true
 		});
-		assert.equal(active.configVersion, `albertsons-2026-${arm}-v12`);
-		assert.equal(active.configHash, V12_CONFIG_HASHES[arm]);
+		assert.equal(active.configVersion, `albertsons-2026-${arm}-v13`);
+		assert.equal(active.configHash, V13_CONFIG_HASHES[arm]);
 		assert.equal(active.model.name, 'anthropic/claude-opus-5');
 		assert.deepEqual(active.model.reasoning, { effort: 'low', exclude: true });
 		// max_tokens bounds OpenRouter's pre-flight credit hold, which is what
@@ -630,13 +639,21 @@ test('Opus 5 load-balances only across the two US ZDR routes while every shipped
 		assert.equal(active.scrubber.model.provider.zdr, true);
 		assert.equal(active.scrubber.model.temperature, 0);
 		assert.equal('reasoning' in active.scrubber.model, false);
-		// CITY/region deliberately absent: research-team decision 2026-08-12
-		// keeps city-level text for conversational quality and analytic signal.
-		assert.deepEqual(
-			[...active.scrubber.categories],
-			['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB', 'CITY']
+		// v13 replaces CITY/DOB with the expanded ADDRESS/DATES policy.
+		assert.deepEqual([...active.scrubber.categories], V13_SCRUB_CATEGORIES);
+		const previousV12 = configs.getStudyConfigRevision(
+			arm,
+			`albertsons-2026-${arm}-v12`,
+			V12_CONFIG_HASHES[arm]
 		);
-		assert.equal(active.scrubber.prompt.includes('- CITY: city, town, county'), true);
+		assert.ok(previousV12, `${arm} prior v12 revision must remain resumable`);
+		assert.deepEqual([...previousV12.scrubber.categories], ['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB', 'CITY']);
+		assert.deepEqual(previousV12.model, active.model);
+		assert.deepEqual(previousV12.ui, active.ui);
+		assert.deepEqual(previousV12.runtimePolicy, active.runtimePolicy);
+		assert.equal(previousV12.systemPrompt, active.systemPrompt);
+		assert.deepEqual(previousV12.scrubber.model, active.scrubber.model);
+		assert.deepEqual(previousV12.scrubber.fallbackModel, active.scrubber.fallbackModel);
 
 		const previousV9 = configs.getStudyConfigRevision(
 			arm,
@@ -1695,6 +1712,151 @@ function scrubProviderResponse(spans) {
 	);
 }
 
+test('client default revisions match the active server registry for every arm', async () => {
+	const constants = await loadServerModule('src/lib/v2/constants.ts');
+	for (const arm of ['flu', 'covid', 'combo', 'demo']) {
+		assert.equal(constants.CONFIG_VERSIONS[arm], configs.getStudyConfig(arm).configVersion);
+	}
+});
+
+test('v13 category definitions, JSON enum, and validator agree; demo keeps its prior policy', () => {
+	for (const arm of ['flu', 'covid', 'combo']) {
+		const policy = configs.getStudyConfig(arm).scrubber;
+		const definitions = [...policy.prompt.matchAll(/^- ([A-Z]+):/gm)].map((match) => match[1]);
+		const outputEnum = /"category":"<([^>]+)>"/.exec(policy.prompt)?.[1].split('|');
+		assert.deepEqual(definitions, V13_SCRUB_CATEGORIES);
+		assert.deepEqual(outputEnum, V13_SCRUB_CATEGORIES);
+		assert.deepEqual([...policy.categories], V13_SCRUB_CATEGORIES);
+		assert.ok(Object.isFrozen(policy));
+		assert.ok(Object.isFrozen(policy.categories));
+	}
+	const demo = configs.getStudyConfig('demo');
+	assert.equal(demo.configVersion, 'vaccine-chat-demo-v3');
+	assert.equal(demo.configHash, 'e8509a2f731b4d0f20884b1a81ca5e878236781cc02c3a1e3644435b31cc6b60');
+	assert.deepEqual([...demo.scrubber.categories], TEST_SCRUB_CATEGORIES);
+});
+
+// The provider replies in these tests are MOCKED. They check the exact-span
+// contract and both routing paths, not an empirical redaction-accuracy score.
+test('v13 accepts all 18 categories through primary and cross-vendor fallback', async () => {
+	const examples = {
+		NAME: 'Jane Example', ADDRESS: 'Ithaca', DATES: 'May 14', PHONE: '202-555-0100',
+		FAX: '202-555-0101', EMAIL: 'jane@example.invalid', SSN: '000-12-3456',
+		MRN: 'MRN-X12', HPBN: 'PLAN-X12', ACCOUNT: 'ACCT-X12', LICENSE: 'LIC-X12',
+		VEHICLE: 'TEST-PLATE-1', DEVICE: 'DEVICE-X12', URL: 'https://example.invalid/photo',
+		IP: '192.0.2.10', BIOMETRIC: 'fingerprint template FP-X12',
+		PHOTO: 'face encoding FACE-X12', ID: 'participant code CODE-X12'
+	};
+	assert.deepEqual(Object.keys(examples), V13_SCRUB_CATEGORIES);
+	const originalFetch = globalThis.fetch;
+	const policy = { ...configs.getStudyConfig('flu').scrubber, maxAttempts: 1 };
+	try {
+		for (const viaFallback of [false, true]) {
+			for (const [category, text] of Object.entries(examples)) {
+				const requests = [];
+				globalThis.fetch = async (_url, init) => {
+					const body = JSON.parse(String(init.body));
+					requests.push(body);
+					if (viaFallback && requests.length === 1) return new Response('', { status: 503 });
+					return scrubProviderResponse([{ text, category }]);
+				};
+				const result = await scrubber.scrubUserMessage({
+					scrubber: policy, history: [], userMessage: `My detail: ${text}.`,
+					apiKey: 'unit-test-key', clientSignal: new AbortController().signal
+				});
+				assert.equal(result.text, `My detail: [${category}_1].`);
+				assert.equal(result.spanCount, 1);
+				assert.equal(result.usedFallback, viaFallback);
+				assert.equal(requests.length, viaFallback ? 2 : 1);
+				assert.equal(requests[0].model, policy.model.name);
+				assert.equal(requests.at(-1).model, viaFallback ? policy.fallbackModel.name : policy.model.name);
+				for (const request of requests) assert.equal(request.messages[0].content, policy.prompt);
+			}
+		}
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('v13 mocked date, age, geography, and reuse reports preserve surrounding text', async () => {
+	const cases = [
+		{ raw: 'I was born May 14, 1980.', spans: [{ text: 'May 14', category: 'DATES' }], expected: 'I was born [DATES_1], 1980.' },
+		{ raw: 'DOB 1980-05-14', spans: [{ text: '05-14', category: 'DATES' }], expected: 'DOB 1980-[DATES_1]' },
+		{ raw: 'My appointment is 03/18/2026.', spans: [{ text: '03/18', category: 'DATES' }], expected: 'My appointment is [DATES_1]/2026.' },
+		{ raw: 'I was born in 1980 and am 46.', spans: [], expected: 'I was born in 1980 and am 46.' },
+		{ raw: 'I am 89 and my grandson is 9.', spans: [], expected: 'I am 89 and my grandson is 9.' },
+		{ raw: 'I am 90 years old and paid 90 dollars.', spans: [{ text: '90 years old', category: 'DATES' }], expected: 'I am [DATES_1] and paid 90 dollars.' },
+		{ raw: 'My mother is ninety-one.', spans: [{ text: 'ninety-one', category: 'DATES' }], expected: 'My mother is [DATES_1].' },
+		{ raw: 'I was born in 1920.', spans: [{ text: '1920', category: 'DATES' }], expected: 'I was born in [DATES_1].' },
+		{ raw: 'I was born in 1936.', spans: [{ text: '1936', category: 'DATES' }], expected: 'I was born in [DATES_1].' },
+		{ raw: 'I was born in 1936 and am still 89.', spans: [], expected: 'I was born in 1936 and am still 89.' },
+		{ raw: 'I was born in 1937.', spans: [], expected: 'I was born in 1937.' },
+		{ raw: 'I was born May 14, 1920.', spans: [{ text: 'May 14, 1920', category: 'DATES' }], expected: 'I was born [DATES_1].' },
+		{ raw: 'I live in Ithaca, New York 14850.', spans: [{ text: 'Ithaca', category: 'ADDRESS' }, { text: '14850', category: 'ADDRESS' }], expected: 'I live in [ADDRESS_1], New York [ADDRESS_2].' },
+		{ raw: 'For the 2026/2027 vaccine, can a 65-year-old with asthma go to Safeway?', spans: [], expected: 'For the 2026/2027 vaccine, can a 65-year-old with asthma go to Safeway?' },
+		{ raw: 'Anything else in Ithaca? I saw [NAME_1].', spans: [{ text: 'Ithaca', category: 'ADDRESS', reuse: 2 }, { text: '[NAME_1]', category: 'NAME' }], expected: 'Anything else in [ADDRESS_2]? I saw [NAME_1].', history: [{ id: 'u1', role: 'user', content: '[NAME_1] lives in [ADDRESS_2]' }, { id: 'a1', role: 'assistant', content: 'Can I help?' }] }
+	];
+	const originalFetch = globalThis.fetch;
+	const policy = configs.getStudyConfig('flu').scrubber;
+	try {
+		for (const fixture of cases) {
+			let input;
+			globalThis.fetch = async (_url, init) => {
+				input = JSON.parse(JSON.parse(String(init.body)).messages[1].content);
+				return scrubProviderResponse(fixture.spans);
+			};
+			const result = await scrubber.scrubUserMessage({
+				scrubber: policy, history: fixture.history ?? [], userMessage: fixture.raw,
+				apiKey: 'unit-test-key', clientSignal: new AbortController().signal
+			});
+			assert.equal(result.text, fixture.expected);
+			assert.equal(input.newUserMessage, fixture.raw);
+			assert.deepEqual(input.recentUserTurns, (fixture.history ?? []).filter((turn) => turn.role === 'user').map((turn) => turn.content));
+			if (fixture.history) assert.deepEqual(input.usedPlaceholders, { NAME: 1, ADDRESS: 2 });
+		}
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('v13 malformed, obsolete-category, and non-verbatim reports fail closed after both models', async () => {
+	const reports = [
+		'not JSON', JSON.stringify({ spans: null }),
+		JSON.stringify({ spans: [{ text: '', category: 'DATES' }] }),
+		JSON.stringify({ spans: [{ text: 'Jane', category: 'UNKNOWN' }] }),
+		JSON.stringify({ spans: [{ text: 'Jane', category: 'DOB' }] }),
+		JSON.stringify({ spans: [{ text: 'Jane', category: 'CITY' }] }),
+		JSON.stringify({ spans: [{ text: '90 or older', category: 'DATES' }] }),
+		JSON.stringify({ spans: [{ text: 'Jane', category: 'NAME' }, { text: 'Jane', category: 'ID' }] })
+	];
+	const originalFetch = globalThis.fetch;
+	const policy = { ...configs.getStudyConfig('flu').scrubber, maxAttempts: 1 };
+	try {
+		for (const report of reports) {
+			const models = [];
+			globalThis.fetch = async (_url, init) => {
+				models.push(JSON.parse(String(init.body)).model);
+				return new Response(JSON.stringify({ choices: [{ message: { content: report } }] }), { status: 200 });
+			};
+			await assert.rejects(
+				scrubber.scrubUserMessage({
+					scrubber: policy, history: [], userMessage: 'I am Jane and I am 90.',
+					apiKey: 'unit-test-key', clientSignal: new AbortController().signal
+				}),
+				(error) => {
+					assert.ok(error instanceof scrubber.ScrubberError);
+					assert.equal(error.code, 'scrub_invalid_output');
+					assert.equal(String(error).includes('Jane'), false);
+					return true;
+				}
+			);
+			assert.deepEqual(models, [policy.model.name, policy.fallbackModel.name]);
+		}
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
 test('applySpans replaces verbatim spans deterministically and continues numbering', () => {
 	const applied = scrubber.applySpans(
 		'My name is Jane Doe and Jane asked about Boise',
@@ -2109,7 +2271,7 @@ test('preview-preserved revisions serve new sessions; all other historical revis
 		assert.equal(preserved.configVersion, `albertsons-2026-${arm}-v9`);
 		assert.equal(preserved.configHash, V9_CONFIG_HASHES[arm]);
 		// Any other historical revision → NOT honored (survey-side gate must fail visibly).
-		for (const stale of ['v6', 'v7', 'v8']) {
+		for (const stale of ['v6', 'v7', 'v8', 'v10', 'v11', 'v12']) {
 			assert.equal(
 				configs.getStudyConfigForNewSession(arm, `albertsons-2026-${arm}-${stale}`).configVersion,
 				active.configVersion,

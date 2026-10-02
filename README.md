@@ -6,8 +6,11 @@ Not monitored for issues and updates. Use at your own risk.
 
 ## Running locally
 
-Current app code lives on `v10-load-testing`. `main` is an older snapshot that
-auto-deploys — check the branch before anything else.
+`main` is the release source branch. Develop on a branch and open a
+pull request. Git pushes do not release production: the production Vercel
+Git connection is disconnected and `vercel.json` disables Git-triggered
+deployments. Follow [the manual production release procedure](docs/production-release.md)
+for an explicit release of an approved commit.
 
 **Prerequisites:** Node 22 (matches the `nodejs22.x` function runtime) and an
 OpenRouter API key.
@@ -15,7 +18,7 @@ OpenRouter API key.
 ### 1. Install
 
 ```sh
-git checkout v10-load-testing
+git checkout main
 npm ci
 ```
 
@@ -85,9 +88,12 @@ top-level, but are built to run inside the Qualtrics survey iframe.
 ### 4. Verify
 
 ```sh
-npm test      # 59 unit tests
+npm test      # offline contract and regression tests
 npm run check # svelte-check
 ```
+
+For the current privacy policy, synthetic evaluation and release gates, see
+[redaction v13](docs/redaction-v13.md).
 
 For the 12 Playwright tests, `pip install playwright && playwright install
 chromium`, then run `python3 tests/v2-browser.py` against a running dev server.
