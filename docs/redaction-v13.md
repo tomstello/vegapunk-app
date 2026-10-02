@@ -30,11 +30,11 @@ The evaluator defaults to `tests/fixtures/pii-jan-v13.json`; override with `--fi
 Only after provider testing is authorized and `OPENROUTER_API_KEY` is available in the environment, evaluate each configured route independently:
 
 ```sh
-node scripts/scrubber-eval.mjs --model primary > /tmp/v13-primary-eval.json
-node scripts/scrubber-eval.mjs --model fallback > /tmp/v13-fallback-eval.json
+node scripts/scrubber-eval.mjs --model primary > /tmp/v13-primary-eval.log
+node scripts/scrubber-eval.mjs --model fallback > /tmp/v13-fallback-eval.log
 ```
 
-Neither command automatically switches to the other model. The fallback evaluation uses the configured fallback route with one attempt, while the primary retains its configured retry limit. Reports include per-case provider failures; any missed identifier, unexpected redaction, retention failure or model error exits unsuccessfully. The optional transcript sweep reports residual detector findings, not an estimate of recall without labeled ground truth.
+Neither command automatically switches to the other model. Each log contains a console summary followed by a JSON report. The fallback evaluation uses the configured fallback route with one attempt, while the primary retains its configured retry limit. Reports include per-case provider failures; any missed identifier, unexpected redaction, retention failure or model error exits unsuccessfully. The optional transcript sweep reports residual detector findings, not an estimate of recall without labeled ground truth.
 
 The checked-in [configuration manifest](releases/v13-config-manifest.json) records the three versions, configuration hashes and prompt hash. Reproduce it from this checkout using:
 
