@@ -216,9 +216,14 @@ export const CheckpointRequestSchema = z
 		state: z.enum(['active', 'interrupted', 'completed', 'capture_error']),
 		reasonHint: z.string().max(100).optional(),
 		transcriptJson: z.string().max(MAX_TRANSCRIPT_UTF16_CODE_UNITS),
-		checkpointHandle: z.string().min(1).max(8_192).optional()
+		checkpointHandle: z.string().min(1).max(8_192).optional(),
+		historyTag: z.string().min(1).max(8_192).optional(),
+		messageReceipts: z.record(uuid, z.string().regex(/^v2m\.[A-Za-z0-9_-]{43}$/))
+			.refine((value) => Object.keys(value).length <= MAX_SNAPSHOT_MESSAGES).optional()
 	})
 	.strict();
+
+export type TranscriptSnapshot = z.infer<typeof TranscriptSnapshotSchema>;
 
 export type SessionRequest = z.infer<typeof SessionRequestSchema>;
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
@@ -235,7 +240,7 @@ export function validateTranscriptSnapshot(
 		snapshotSequence: number;
 		state: 'active' | 'interrupted' | 'completed' | 'capture_error';
 	}
-): Record<string, unknown> {
+): TranscriptSnapshot {
 	let snapshot: unknown;
 	try {
 		snapshot = JSON.parse(transcriptJson);
@@ -245,6 +250,9 @@ export function validateTranscriptSnapshot(
 	if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
 		throw new Error('transcriptJson must contain one complete JSON object');
 	}
+	// Store exactly the reviewed representation: duplicate keys or noncanonical
+	// escapes must not hide bytes that JSON.parse would discard.
+	if (JSON.stringify(snapshot) !== transcriptJson) throw new Error('Transcript must use canonical JSON');
 	const parsed = TranscriptSnapshotSchema.safeParse(snapshot);
 	if (!parsed.success) {
 		throw new Error(parsed.error.issues[0]?.message ?? 'Transcript does not match the v2 schema');
@@ -324,5 +332,5 @@ export function validateTranscriptSnapshot(
 			}
 		}
 	}
-	return object as unknown as Record<string, unknown>;
+	return object;
 }

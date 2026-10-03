@@ -20,6 +20,7 @@ import { networkErrorDiagnostic } from '$lib/server/v2/providerDiagnostics';
 import { ScrubberError, scrubUserMessage } from '$lib/server/v2/scrubber';
 import { ChatRequestSchema } from '$lib/server/v2/schemas';
 import { effectiveMaxTurns, getStudyConfigRevision } from '$lib/server/v2/studyConfig';
+import { assertScreenedConfiguration, issueMessageReceipt } from '$lib/server/v2/provenance';
 import { recordDemoTranscript } from '$lib/server/v2/demoStore';
 import { waitUntil } from '@vercel/functions';
 import {
@@ -73,6 +74,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			if (!config) {
 				throw new V2HttpError(409, 'config_revision_unavailable', 'The saved chat configuration is unavailable');
 			}
+		try { assertScreenedConfiguration(config); }
+		catch { throw new V2HttpError(409, 'config_revision_unsupported', 'This older chat configuration is no longer supported'); }
 		const body = parseWithSchema(
 			ChatRequestSchema,
 			await readJsonWithByteLimit(request, MAX_CHAT_REQUEST_BYTES)
@@ -306,6 +309,7 @@ export const POST: RequestHandler = async ({ request }) => {
 							sequence: body.sequence,
 							turnId: body.turn.id,
 							assistantMessageId,
+							userReceipt: issueMessageReceipt(secret, session, { id: body.turn.id, turnId: body.turn.id, role: 'user', content: canonicalUserMessage }),
 							condition: session.condition,
 							configVersion: session.configVersion,
 							configHash: session.configHash,
@@ -325,7 +329,7 @@ export const POST: RequestHandler = async ({ request }) => {
 								assistantText += accepted;
 								assistantCodePoints += Array.from(accepted).length;
 								deltasDelivered += 1;
-								controller.enqueue(sse('delta', { v: 2, text: accepted }));
+								controller.enqueue(sse('delta', { v: 2, text: accepted, receipt: issueMessageReceipt(secret, session, { id: assistantMessageId, turnId: body.turn.id, role: 'assistant', content: assistantText }) }));
 							}
 							if (codePoints.length > available) {
 								providerStream.cancel();

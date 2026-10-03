@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { recoveredMessageReceipts } from "./checkpointProof";
 	import { onMount, tick } from "svelte";
 	import medicalAvatar from "$lib/icons/medical2.png";
 	import scrollDownIcon from "$lib/icons/down.svg";
@@ -247,11 +248,12 @@
 
 	function savedConfigurationForResume(
 		init: ParentInitMessage,
-	): { configVersion: string; configHash: string } | undefined {
+	): { configVersion: string; configHash: string; proof?: string } | undefined {
 		const candidates: Array<{
 			configVersion: string;
 			configHash: string;
 			snapshotSequence: number;
+			proof?: string;
 		}> = [];
 		const stored = readPersistedState(init.sessionKey);
 		if (
@@ -264,6 +266,7 @@
 				configVersion: stored.state.configVersion,
 				configHash: stored.state.configHash,
 				snapshotSequence: stored.state.snapshotSequence,
+				proof: stored.state.historyTag,
 			});
 		}
 		const parent = init.lastSnapshot;
@@ -275,6 +278,7 @@
 				configVersion: parent.configVersion,
 				configHash: parent.configHash,
 				snapshotSequence: parent.snapshotSequence,
+				proof: init.historyTag,
 			});
 		}
 		if (candidates.length === 0) return undefined;
@@ -296,6 +300,7 @@
 		return {
 			configVersion: selected.configVersion,
 			configHash: selected.configHash,
+			proof: selected.proof,
 		};
 	}
 
@@ -438,6 +443,9 @@
 					// event (for example pagehide) must be allowed to enqueue the current
 					// cumulative transcript again; it is never retried from this callback.
 					lastCheckpointedTranscriptRevision = -1;
+					if (code === "invalid_checkpoint_provenance") {
+						lastParticipantError = "The backup could not verify part of the recovered conversation. The survey copy was preserved, but this backup was not saved.";
+					}
 					if (recordCaptureError("checkpoint", code)) {
 						persistNow();
 						if (state?.chatEndISO && !endAcknowledged) {
@@ -522,6 +530,7 @@
 			restored = stateFromParentSnapshot(parentSnapshot, init, session);
 		}
 
+		if (restored) restored = { ...restored, messageReceipts: recoveredMessageReceipts(restored, localRestored) };
 		if (!restored) restored = createFreshState(init, session);
 		if (!storageWritable) {
 			restored = appendCaptureError(restored, {
@@ -1026,7 +1035,7 @@
 			state.chatSessionKey,
 			state.attemptNonce,
 			undefined,
-			{ configVersion: state.configVersion, configHash: state.configHash },
+			{ configVersion: state.configVersion, configHash: state.configHash, proof: state.historyTag },
 		);
 		if (refreshed.configVersion !== state.configVersion || refreshed.configHash !== state.configHash) {
 			throw new ParticipantSafeError("refreshed_config_mismatch", "The chat configuration changed and could not be verified.", false);
@@ -1103,7 +1112,7 @@
 					),
 			};
 		}
-		const assistantLocalId = newUuid();
+		let assistantLocalId = newUuid();
 		state = {
 			...state,
 			lifecycle: "streaming",
@@ -1153,6 +1162,13 @@
 				signal: activeRequest.signal,
 				onMeta: (meta) => {
 					if (!state || state.lifecycle === "completed" || state.chatEndISO) return;
+					if (meta.assistantMessageId) {
+						const oldId = assistantLocalId;
+						assistantLocalId = meta.assistantMessageId;
+						state = { ...state, messages: state.messages.map((message) => message.id === oldId ? { ...message, id: assistantLocalId } : message) };
+						beginStreamPresentation(assistantLocalId);
+					}
+					if (meta.userReceipt) state = { ...state, messageReceipts: { ...state.messageReceipts, [turnId]: meta.userReceipt } };
 					const canonical = meta.scrubbedUserMessage;
 					if (typeof canonical === "string") {
 						// The server signs exactly this text at `done`; the stored
@@ -1186,11 +1202,20 @@
 						}
 					}
 				},
-				onDelta: (delta) => {
+				onDelta: (delta, receipt) => {
 					if (!state || state.lifecycle === "completed" || state.chatEndISO) return;
 					const answer = state.messages.find((message) => message.id === assistantLocalId);
 					if (!answer) return;
 					const accepted = appendDeltaWithinLimits(assistantLocalId, delta);
+					if (accepted !== delta) {
+						// Only keep a whole server-attested prefix. A local
+						// capacity cap must not leave an unattested substring.
+						state = { ...state, messages: state.messages.map((message) => message.id === assistantLocalId ? { ...message, content: answer.content } : message) };
+						locallyCapped = true;
+						activeRequest?.abort();
+						return;
+					}
+					if (receipt) state = { ...state, messageReceipts: { ...state.messageReceipts, [assistantLocalId]: receipt } };
 					queueStreamPresentation(assistantLocalId, accepted);
 					transcriptRevision += 1;
 					if (Date.now() - lastStreamPersistAt >= 500) {

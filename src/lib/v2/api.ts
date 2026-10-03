@@ -12,6 +12,7 @@ import type {
 	SessionResponse,
 	StudyCondition,
 } from "./types";
+import { MESSAGE_RECEIPT_PATTERN } from "./checkpointProof";
 import { PARTNER_THEME_IDS } from "./types";
 
 const UUID_PATTERN =
@@ -231,19 +232,19 @@ export async function createPublicSession(
 	chatSessionKey: string,
 	attemptNonce: string,
 	signal?: AbortSignal,
-	resumeConfig?: { configVersion: string; configHash: string },
+	resumeConfig?: { configVersion: string; configHash: string; proof?: string },
 	preferredConfigVersion?: string,
 ): Promise<SessionResponse> {
 	let response: Response;
 	try {
 		response = await fetch(`/api/v2/session/${condition}`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", ...(resumeConfig?.proof ? { "x-session-resume-proof": resumeConfig.proof } : {}) },
 			body: JSON.stringify({
 				v: 2,
 				chatSessionKey,
 				attemptNonce,
-				...(resumeConfig ? { resumeConfig } : {}),
+				...(resumeConfig ? { resumeConfig: { configVersion: resumeConfig.configVersion, configHash: resumeConfig.configHash } } : {}),
 				...(preferredConfigVersion ? { preferredConfigVersion } : {}),
 			}),
 			signal,
@@ -304,7 +305,7 @@ interface ChatRequestOptions {
 	turn: { id: string; userMessage: string };
 	signal?: AbortSignal;
 	onMeta: (meta: ChatMetaEvent) => void;
-	onDelta: (text: string) => void;
+	onDelta: (text: string, receipt?: string) => void;
 }
 
 interface ParsedSseEvent {
@@ -409,9 +410,15 @@ async function consumeSse(
 				}
 				scrubbedUserMessage = data.scrubbedUserMessage;
 			}
-			options.onMeta(
-				scrubbedUserMessage === undefined ? {} : { scrubbedUserMessage },
-			);
+			if (data.userReceipt !== undefined &&
+				(typeof data.userReceipt !== "string" || !MESSAGE_RECEIPT_PATTERN.test(data.userReceipt) || !isUuid(data.assistantMessageId))) {
+				throw new ParticipantSafeError("stream_invalid_meta", "The answer could not be verified. You can try again.", true);
+			}
+			options.onMeta({
+				...(scrubbedUserMessage === undefined ? {} : { scrubbedUserMessage }),
+				...(isUuid(data.assistantMessageId) ? { assistantMessageId: data.assistantMessageId } : {}),
+				...(typeof data.userReceipt === "string" ? { userReceipt: data.userReceipt } : {})
+			});
 			return;
 		}
 		if (!receivedMeta) {
@@ -429,7 +436,10 @@ async function consumeSse(
 					true,
 				);
 			}
-			options.onDelta(data.text);
+			if (data.receipt !== undefined && (typeof data.receipt !== "string" || !MESSAGE_RECEIPT_PATTERN.test(data.receipt))) {
+				throw new ParticipantSafeError("stream_invalid_delta", "The answer could not be verified. You can try again.", true);
+			}
+			options.onDelta(data.text, typeof data.receipt === 'string' ? data.receipt : undefined);
 			return;
 		}
 		if (parsedEvent.event === "error") {
