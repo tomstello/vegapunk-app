@@ -5,11 +5,12 @@
 	"scripts": {
 		"dev": "NODE_ENV=development vite dev",
 		"build": "NODE_ENV=production vite build",
+		"release:build": "node scripts/release-verify-and-build.mjs",
 		"preview": "vite preview",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "eslint .",
-		"test": "node --test tests/v2-client.test.mjs tests/v2-server.test.mjs tests/loadtest-stub.test.mjs tests/loadtest-snapshot.test.mjs",
+		"test": "node --test tests/v2-client.test.mjs tests/v2-server.test.mjs tests/loadtest-stub.test.mjs tests/loadtest-snapshot.test.mjs tests/scrubber-eval.test.mjs",
 		"loadtest": "node loadtest/harness.mjs",
 		"v2:config-manifest": "node scripts/v2-config-manifest.mjs"
 	},

@@ -1,19 +1,22 @@
 #!/usr/bin/env node
-// Scrubber evaluation harness ("V7 SCRUB REVISION - design" §10).
+// Scrubber evaluation harness. Synthetic Jan v13 policy fixtures are the default.
 //
-// Loads the PRODUCTION scrubber module and active v7 scrubber configuration
+// Loads the scrubber module and active configuration from this checkout
 // via esbuild (same technique as the unit tests), so the eval exercises the
 // exact prompt, provider policy, span verification, and substitution code
 // that serves participants. Two modes:
 //
-//   node scripts/scrubber-eval.mjs                         # planted-PII eval
-//   node scripts/scrubber-eval.mjs --model haiku           # Haiku 4.5 variant
+//   node scripts/scrubber-eval.mjs --validate-fixtures     # offline, no key/network
+//   node scripts/scrubber-eval.mjs --model primary         # paid primary-only eval
+//   node scripts/scrubber-eval.mjs --model fallback        # paid fallback-only eval
+//   node scripts/scrubber-eval.mjs --fixtures path.json    # explicit labeled suite
 //   node scripts/scrubber-eval.mjs --sweep conversations.jsonl
 //                                                          # report-only sweep
 //
 // The sweep mode reads parse_transcripts_v6.py JSONL output and reports any
 // PII the detector still finds in stored (already-redacted) transcripts —
-// the in-the-wild recall evidence. It never modifies anything.
+// residual detector findings, not a recall estimate without labeled ground
+// truth. It never modifies anything.
 //
 // Credentials: OPENROUTER_API_KEY from the environment, else read directly
 // from ../.env (never printed, never logged). Calls run under the same
@@ -24,6 +27,8 @@ import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 
 const CONCURRENCY = 4;
 
@@ -77,13 +82,60 @@ function percentile(values, fraction) {
 	return sorted[Math.min(sorted.length - 1, Math.ceil(fraction * sorted.length) - 1)];
 }
 
-function spanMatches(expected, reported) {
-	if (expected.category !== reported.category) return false;
-	return (
-		expected.text === reported.text ||
-		reported.text.includes(expected.text) ||
-		expected.text.includes(reported.text)
-	);
+function locations(text, assertion) {
+	const value = typeof assertion === 'string' ? assertion : assertion.text;
+	const matches = [];
+	let from = 0;
+	while (from <= text.length - value.length) {
+		const start = text.indexOf(value, from);
+		if (start === -1) break;
+		matches.push({ start, end: start + value.length });
+		from = start + value.length;
+	}
+	return typeof assertion === 'object' && assertion.occurrence !== undefined
+		? matches.slice(assertion.occurrence, assertion.occurrence + 1)
+		: matches;
+}
+
+export function validateFixtures(suite, allowedCategories) {
+	if (!Array.isArray(suite.cases) || suite.cases.length === 0) throw new Error('fixtures require nonempty cases');
+	const allowed = new Set(allowedCategories ?? suite.categories);
+	const ids = new Set();
+	for (const fixture of suite.cases) {
+		if (!fixture.id || ids.has(fixture.id)) throw new Error(`missing/duplicate fixture id: ${fixture.id}`);
+		ids.add(fixture.id);
+		if (typeof fixture.text !== 'string' || !fixture.text || !Array.isArray(fixture.expected)) {
+			throw new Error(`${fixture.id}: require text and expected array`);
+		}
+		for (const assertion of [...fixture.expected, ...(fixture.retain ?? []), ...(fixture.allowRedact ?? [])]) {
+			const value = typeof assertion === 'string' ? assertion : assertion.text;
+			if (typeof value !== 'string' || !value || !locations(fixture.text, assertion).length) {
+				throw new Error(`${fixture.id}: assertion is not a nonempty verbatim substring`);
+			}
+			if (typeof assertion === 'object' && assertion.occurrence !== undefined &&
+				(!Number.isInteger(assertion.occurrence) || assertion.occurrence < 0)) {
+				throw new Error(`${fixture.id}: invalid occurrence`);
+			}
+		}
+		for (const expected of fixture.expected) {
+			if (!allowed.has(expected.category)) throw new Error(`${fixture.id}: unsupported category ${expected.category}`);
+			for (const sensitive of locations(fixture.text, expected)) {
+				for (const retained of (fixture.retain ?? []).flatMap((a) => locations(fixture.text, a))) {
+					if (sensitive.start < retained.end && sensitive.end > retained.start) {
+						throw new Error(`${fixture.id}: sensitive and retained assertions overlap`);
+					}
+				}
+			}
+		}
+		for (const optional of fixture.allowRedact ?? []) {
+			for (const allowed of locations(fixture.text, optional)) {
+				for (const retained of (fixture.retain ?? []).flatMap((a) => locations(fixture.text, a))) {
+					if (allowed.start < retained.end && allowed.end > retained.start) throw new Error(`${fixture.id}: optional redaction and retained assertions overlap`);
+				}
+			}
+		}
+	}
+	return { cases: suite.cases.length, categories: [...new Set(suite.cases.flatMap((c) => c.expected.map((e) => e.category)))] };
 }
 
 async function mapLimit(items, limit, worker) {
@@ -103,48 +155,92 @@ async function mapLimit(items, limit, worker) {
 
 // Detection-only wrapper: run the production scrub and diff the output
 // against the input to recover which spans were redacted.
-function reportedSpans(rawText, scrubbedText) {
-	// Reconstruct replacements by aligning around placeholders.
-	const spans = [];
-	const occurrences = [];
-	const placeholder = /\[([A-Z]{2,16})_(\d{1,3})\]/g;
-	// Walk both strings; when the scrubbed text hits a placeholder, find the
-	// next anchor (text after the placeholder up to the following placeholder)
-	// in the raw string to recover the replaced substring.
-	let rawIndex = 0;
-	let scrubIndex = 0;
-	let match;
-	const matches = [...scrubbedText.matchAll(placeholder)];
-	for (let i = 0; i < matches.length; i += 1) {
-		match = matches[i];
-		const literalBefore = scrubbedText.slice(scrubIndex, match.index);
-		rawIndex += literalBefore.length;
-		scrubIndex = match.index + match[0].length;
-		const nextStart = i + 1 < matches.length ? matches[i + 1].index : scrubbedText.length;
-		const anchor = scrubbedText.slice(scrubIndex, nextStart);
-		const rawEnd = anchor.length > 0 ? rawText.indexOf(anchor, rawIndex) : rawText.length;
-		if (rawEnd === -1) return null; // alignment failed; caller flags it
-		const replaced = rawText.slice(rawIndex, rawEnd);
-		occurrences.push({ token: match[0], replaced });
-		// A placeholder that already existed verbatim in the raw text is a
-		// no-op (participant echoed it), not a redaction.
-		if (replaced !== match[0]) spans.push({ text: replaced, category: match[1] });
-		rawIndex = rawEnd;
+export function reportedSpans(rawText, scrubbedText) {
+	const matches = [...scrubbedText.matchAll(/\[([A-Z]{2,16})_(\d{1,3})\]/g)];
+	const solutions = [];
+	let steps = 0;
+	// Reconstruct exact raw offsets, never guess the first occurrence of a
+	// repeated anchor. More than one alignment is conservatively unscorable.
+	function walk(index, rawIndex, outputIndex, spans) {
+		steps += 1;
+		if (steps > 10000 || solutions.length > 1) return;
+		if (index === matches.length) {
+			if (rawText.slice(rawIndex) === scrubbedText.slice(outputIndex)) solutions.push(spans);
+			return;
+		}
+		const match = matches[index];
+		const literal = scrubbedText.slice(outputIndex, match.index);
+		if (!rawText.startsWith(literal, rawIndex)) return;
+		const start = rawIndex + literal.length;
+		const nextOutput = match.index + match[0].length;
+		const anchor = scrubbedText.slice(nextOutput, matches[index + 1]?.index ?? scrubbedText.length);
+		for (let end = start + 1; end <= rawText.length; end += 1) {
+			if (!rawText.startsWith(anchor, end)) continue;
+			const text = rawText.slice(start, end);
+			// Existing placeholders must survive as literal tokens, not be
+			// swallowed into a newly inferred sensitive span.
+			const unchanged = text === match[0];
+			if (!unchanged && /\[[A-Z]{2,16}_\d{1,3}\]/.test(text)) continue;
+			walk(index + 1, end, nextOutput,
+				unchanged ? spans : [...spans, { start, end, text, category: match[1], token: match[0] }]);
+			if (solutions.length > 1 || steps > 10000) return;
+		}
 	}
-	// End-to-end fidelity: expanding every placeholder occurrence back to its
-	// claimed raw substring must reproduce the raw message byte-for-byte.
-	let rebuilt = scrubbedText;
-	for (const { token, replaced } of occurrences) {
-		rebuilt = rebuilt.replace(token, () => replaced);
+	walk(0, 0, 0, []);
+	if (solutions.length !== 1 || steps > 10000) return null;
+	return { spans: solutions[0], faithful: true, redactedChars: solutions[0].reduce((n, s) => n + s.text.length, 0) };
+}
+
+export function evaluateFixture(fixture, scrubbedText) {
+	const result = reportedSpans(fixture.text, scrubbedText);
+	const expected = fixture.expected.flatMap((assertion) => locations(fixture.text, assertion)
+		.map((range) => ({ ...assertion, ...range })));
+	if (!result) return { expected, found: [], reported: [], failures: [{ error: 'alignment_failed_or_ambiguous' }] };
+	const failures = [];
+	const found = expected.filter((span) => {
+		// Cover every non-whitespace character in every intended occurrence.
+		// Full names/IDs cannot pass on a matching prefix or suffix. Separate
+		// month/day reports may collectively satisfy a complete date span.
+		for (let i = span.start; i < span.end; i += 1) {
+			if (/\s/.test(fixture.text[i])) continue;
+			if (!result.spans.some((r) => r.category === span.category && r.start <= i && r.end > i)) {
+				failures.push({ missed: span });
+				return false;
+			}
+		}
+		return true;
+	});
+	for (const span of expected) {
+		if (span.expectPlaceholder && !result.spans.some((r) => r.token === span.expectPlaceholder && r.start < span.end && r.end > span.start)) {
+			failures.push({ missedPlaceholder: span.expectPlaceholder });
+		}
 	}
-	const redactedChars = occurrences
-		.filter(({ token, replaced }) => token !== replaced)
-		.reduce((sum, { replaced }) => sum + replaced.length, 0);
-	// Repeated occurrences of one entity share one placeholder by design;
-	// score each unique (text, category) once.
-	const unique = new Map();
-	for (const span of spans) unique.set(`${span.category} ${span.text}`, span);
-	return { spans: [...unique.values()], faithful: rebuilt === rawText, redactedChars };
+	for (const assertion of fixture.retain ?? []) {
+		for (const retained of locations(fixture.text, assertion)) {
+			if (result.spans.some((r) => r.start < retained.end && r.end > retained.start)) {
+				failures.push({ mustRetain: assertion, ...retained });
+			}
+		}
+	}
+	const reported = result.spans.map((span) => ({ ...span, truePositive: found.some((e) =>
+		e.category === span.category && e.start < span.end && e.end > span.start) }));
+	const permitted = [...expected, ...(fixture.allowRedact ?? []).flatMap((a) => locations(fixture.text, a))];
+	// A detector cannot pass by erasing the surrounding sentence. Only
+	// whitespace/punctuation or fixture-explicit optional context may extend
+	// beyond the labeled sensitive spans. No proportional length allowance.
+	for (const span of reported) {
+		const unexpectedOffsets = [];
+		for (let i = span.start; i < span.end; i += 1) {
+			if (/[\s\p{P}]/u.test(fixture.text[i])) continue;
+			if (!permitted.some((p) => p.start <= i && p.end > i)) unexpectedOffsets.push(i);
+		}
+		if (unexpectedOffsets.length) {
+			span.truePositive = false;
+			failures.push({ overRedaction: { span, unexpectedOffsets } });
+		}
+	}
+	for (const extra of reported.filter((r) => !r.truePositive)) failures.push({ falsePositive: extra });
+	return { expected, found, reported, failures };
 }
 
 function historyFromStrings(redactedTurns) {
@@ -161,17 +257,22 @@ async function main() {
 	const modelChoice = args.includes('--model') ? args[args.indexOf('--model') + 1] : 'primary';
 	const fixturesAt = args.indexOf('--fixtures');
 	const fixturesArg = fixturesAt !== -1 ? args[fixturesAt + 1] : null;
+	if (fixturesAt !== -1 && (!fixturesArg || fixturesArg.startsWith('--'))) throw new Error('--fixtures requires a JSON path');
+	if (!['primary', 'fallback', 'sonnet', 'haiku'].includes(modelChoice)) throw new Error('--model must be primary, fallback, sonnet (legacy alias), or haiku');
+	const offline = args.includes('--validate-fixtures');
+	if (offline && sweepAt !== -1) throw new Error('--validate-fixtures cannot be combined with --sweep');
 
 	const [configs, scrubberModule] = await Promise.all([
 		loadServerModule('src/lib/server/v2/studyConfig.ts'),
 		loadServerModule('src/lib/server/v2/scrubber.ts')
 	]);
-	const activeScrubber = configs.getStudyConfig('flu').scrubber;
+	const studyConfig = configs.getStudyConfig('flu');
+	const activeScrubber = studyConfig.scrubber;
 	if (!activeScrubber) throw new Error('active registry has no scrubber configuration');
 	// Evaluate exactly one model at a time: the fallback is stripped so a
 	// primary failure surfaces instead of silently switching vendors.
-	// Default = the configured primary (Flash Lite); 'sonnet' evaluates the
-	// configured cross-vendor fallback in isolation.
+	// 'fallback' evaluates the configured cross-vendor fallback in isolation;
+	// the legacy name 'sonnet' is retained as an alias, not a hardcoded model.
 	const isolated = { ...activeScrubber };
 	delete isolated.fallbackModel;
 	let scrubberConfig = isolated;
@@ -193,14 +294,28 @@ async function main() {
 				reasoning: { effort: 'low', exclude: true }
 			}
 		};
-	} else if (modelChoice === 'sonnet') {
+	} else if (modelChoice === 'sonnet' || modelChoice === 'fallback') {
 		if (!activeScrubber.fallbackModel) throw new Error('active scrubber has no fallback model');
-		scrubberConfig = { ...isolated, model: activeScrubber.fallbackModel };
+		// Production fallback is attempted only once. Do not give its isolated
+		// evaluation extra retries that could inflate its apparent reliability.
+		scrubberConfig = { ...isolated, model: activeScrubber.fallbackModel, maxAttempts: 1 };
 	}
-	const key = await apiKey();
-	console.log(`scrubber eval: model=${scrubberConfig.model.name} routes=${scrubberConfig.model.provider.only.join(',')}`);
+	const metadata = {
+		configVersion: studyConfig.configVersion,
+		configHash: studyConfig.configHash,
+		promptSha256: createHash('sha256').update(scrubberConfig.prompt).digest('hex'),
+		categories: scrubberConfig.categories,
+		modelChoice,
+		model: scrubberConfig.model.name,
+		provider: scrubberConfig.model.provider,
+		maxAttempts: scrubberConfig.maxAttempts,
+		fallbackEnabled: false,
+		semanticValidation: scrubberConfig.semanticValidation ?? null,
+		codeSource: 'current checkout; not a production inspection'
+	};
 
 	if (sweepAt !== -1) {
+		const key = await apiKey();
 		const file = args[sweepAt + 1];
 		if (!file) throw new Error('--sweep requires a conversations JSONL path');
 		const findings = [];
@@ -242,15 +357,31 @@ async function main() {
 				});
 			}
 		});
-		console.log(JSON.stringify({ scannedMessages: scanned, findings }, null, 2));
+		console.log(JSON.stringify({ ...metadata, scannedMessages: scanned, findings }, null, 2));
 		process.exitCode = findings.length > 0 ? 2 : 0;
 		return;
 	}
 
 	const fixturePath = fixturesArg
 		? fixturesArg
-		: fileURLToPath(new URL('../tests/fixtures/pii-planted.json', import.meta.url));
-	const { cases } = JSON.parse(await readFile(fixturePath, 'utf8'));
+		: fileURLToPath(new URL('../tests/fixtures/pii-jan-v13.json', import.meta.url));
+	const fixtureSource = await readFile(fixturePath, 'utf8');
+	const suite = JSON.parse(fixtureSource);
+	const { cases } = suite;
+	const validation = validateFixtures(suite, scrubberConfig.categories);
+	const evaluationMetadata = {
+		...metadata,
+		fixturePath: resolve(fixturePath),
+		fixtureSha256: createHash('sha256').update(fixtureSource).digest('hex'),
+		fixturePolicy: suite.policy ?? null,
+		synthetic: suite.synthetic === true
+	};
+	if (offline) {
+		console.log(JSON.stringify({ ...evaluationMetadata, mode: 'offline-fixture-validation', ...validation, modelCalls: 0 }, null, 2));
+		return;
+	}
+	const key = await apiKey();
+	console.log(`scrubber eval: model=${scrubberConfig.model.name} routes=${scrubberConfig.model.provider.only.join(',')}`);
 	const latencies = [];
 	const perCategory = new Map();
 	const bump = (category, field) => {
@@ -259,7 +390,10 @@ async function main() {
 		perCategory.set(category, entry);
 	};
 	const failures = [];
-	let verbatimFailures = 0;
+	let outputValidationFailures = 0;
+	let semanticValidationFailures = 0;
+	let modelFailureCases = 0;
+	const completedAttempts = [];
 
 	await mapLimit(cases, CONCURRENCY, async (fixture) => {
 		const startedAt = Date.now();
@@ -273,56 +407,26 @@ async function main() {
 				clientSignal: new AbortController().signal
 			});
 		} catch (error) {
-			if (error?.code === 'scrub_invalid_output') verbatimFailures += 1;
-			failures.push({ id: fixture.id, error: error?.code ?? String(error) });
-			for (const expected of fixture.expected) bump(expected.category, 'expected');
+			modelFailureCases += 1;
+			if (error?.code === 'scrub_invalid_output') outputValidationFailures += 1;
+			const validation = error?.diagnostic?.validation;
+			if (validation === 'age_retention') semanticValidationFailures += 1;
+			failures.push({ id: fixture.id, error: error?.code ?? String(error), ...(validation ? { validation } : {}) });
+			for (const expected of fixture.expected) {
+				for (const _ of locations(fixture.text, expected)) bump(expected.category, 'expected');
+			}
 			return;
 		}
+		completedAttempts.push({ id: fixture.id, attempts: scrubbed.attempts, usedFallback: scrubbed.usedFallback });
 		latencies.push(Date.now() - startedAt);
-		const result = reportedSpans(fixture.text, scrubbed.text);
-		if (result === null) {
-			failures.push({ id: fixture.id, error: 'alignment_failed', scrubbed: scrubbed.text });
-			for (const expected of fixture.expected) bump(expected.category, 'expected');
-			return;
+		const evaluated = evaluateFixture(fixture, scrubbed.text);
+		for (const expected of evaluated.expected) bump(expected.category, 'expected');
+		for (const found of evaluated.found) bump(found.category, 'found');
+		for (const reported of evaluated.reported) {
+			bump(reported.category, 'reported');
+			if (reported.truePositive) bump(reported.category, 'truePositives');
 		}
-		const reported = result.spans;
-		if (!result.faithful) {
-			failures.push({ id: fixture.id, error: 'reconstruction_mismatch', scrubbed: scrubbed.text });
-		}
-		const expectedChars = fixture.expected.reduce((sum, e) => sum + e.text.length, 0);
-		// Compare unique span text, not occurrence totals: redacting every
-		// occurrence of one entity is correct, not over-redaction.
-		const uniqueRedactedChars = reported.reduce((sum, span) => sum + span.text.length, 0);
-		if (fixture.expected.length > 0 && uniqueRedactedChars > expectedChars * 2 + 15) {
-			failures.push({
-				id: fixture.id,
-				overRedaction: { uniqueRedactedChars, occurrenceChars: result.redactedChars, expectedChars },
-				scrubbed: scrubbed.text
-			});
-		}
-		const unmatchedReported = [...reported];
-		for (const expected of fixture.expected) {
-			bump(expected.category, 'expected');
-			const index = unmatchedReported.findIndex((span) => spanMatches(expected, span));
-			if (index !== -1) {
-				bump(expected.category, 'found');
-				bump(expected.category, 'truePositives');
-				unmatchedReported.splice(index, 1);
-			} else {
-				failures.push({ id: fixture.id, missed: expected, scrubbed: scrubbed.text });
-			}
-			if (expected.expectPlaceholder && !scrubbed.text.includes(expected.expectPlaceholder)) {
-				failures.push({
-					id: fixture.id,
-					missedPlaceholder: expected.expectPlaceholder,
-					scrubbed: scrubbed.text
-				});
-			}
-		}
-		for (const span of reported) bump(span.category, 'reported');
-		for (const extra of unmatchedReported) {
-			failures.push({ id: fixture.id, falsePositive: extra, scrubbed: scrubbed.text });
-		}
+		for (const failure of evaluated.failures) failures.push({ id: fixture.id, ...failure, scrubbed: scrubbed.text });
 	});
 
 	const rows = [...perCategory.entries()].map(([category, entry]) => ({
@@ -345,12 +449,19 @@ async function main() {
 	console.log(
 		JSON.stringify(
 			{
+				...evaluationMetadata,
+				mode: 'live-isolated-model-evaluation',
+				scoring: 'complete non-whitespace coverage per intended occurrence; retained spans must not overlap replacements',
 				cases: cases.length,
+				modelFailureCases,
+				successfulModelCases: cases.length - modelFailureCases,
+				completedAttempts,
 				overallRecall: totals.expected ? Number((totals.found / totals.expected).toFixed(3)) : null,
 				overallPrecision: totals.reported
 					? Number((totals.truePositives / totals.reported).toFixed(3))
 					: null,
-				verbatimFailures,
+				outputValidationFailures,
+				semanticValidationFailures,
 				latencyMs: {
 					p50: percentile(latencies, 0.5),
 					p95: percentile(latencies, 0.95),
@@ -362,11 +473,14 @@ async function main() {
 			2
 		)
 	);
-	// Acceptance bar from the design doc: names/contacts recall >= 0.95, p95 <= ~2s.
-	process.exitCode = failures.some((failure) => failure.missed || failure.error) ? 2 : 0;
+	// Retention errors and false positives are failures too, not an exit-zero
+	// report that could be mistaken for a successful acceptance run.
+	process.exitCode = failures.length > 0 ? 2 : 0;
 }
 
-main().catch((error) => {
-	console.error(error?.message ?? error);
-	process.exitCode = 1;
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	main().catch((error) => {
+		console.error(error?.message ?? error);
+		process.exitCode = 1;
+	});
+}

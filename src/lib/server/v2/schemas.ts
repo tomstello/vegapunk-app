@@ -31,8 +31,8 @@ export const SessionRequestSchema = z
 			.strict()
 			.optional(),
 		// The survey's bound serverConfigId. Honored for NEW sessions only when
-		// that revision is on the server's preview-preserved allowlist (partner
-		// preview surveys must keep working across deployments); otherwise the
+		// that revision is on the server's explicitly preserved allowlist (partner
+		// previews and the v12 production-to-v13 transition); otherwise the
 		// active revision is served and the survey-side gate fails visibly.
 		preferredConfigVersion: z.string().min(1).max(96).optional()
 	})

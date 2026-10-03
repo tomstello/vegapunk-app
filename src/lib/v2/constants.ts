@@ -17,9 +17,9 @@ export const LOCAL_STREAM_PERSIST_MS = 500;
 export const PARENT_HANDSHAKE_TIMEOUT_MS = 12_000;
 
 export const CONFIG_VERSIONS: Record<StudyCondition, string> = {
-	flu: "albertsons-2026-flu-v10",
-	covid: "albertsons-2026-covid-v10",
-	combo: "albertsons-2026-combo-v10",
+	flu: "albertsons-2026-flu-v13",
+	covid: "albertsons-2026-covid-v13",
+	combo: "albertsons-2026-combo-v13",
 	// The standalone demo has no survey to name its revision, so this must track
 	// the server's active demo config (studyConfig.ts) or every demo session
 	// fails the version check before the chat starts.

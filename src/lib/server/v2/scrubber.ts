@@ -3,6 +3,7 @@ import { MAX_USER_CODE_POINTS, OPENROUTER_RETRYABLE_STATUS_CODES } from './limit
 import { networkErrorDiagnostic, type NetworkErrorDiagnostic } from './providerDiagnostics';
 import type { ScrubberConfig, ScrubberModel } from './studyConfig';
 import type { HistoryMessage } from './tokens';
+import { janV13ProtectedRanges } from './scrubberSemantics';
 
 // PII redaction screen for the incoming user turn. The scrubber model only
 // REPORTS exact spans; this module verifies each span verbatim and performs
@@ -38,6 +39,7 @@ export class ScrubberError extends Error {
 		public readonly diagnostic: Readonly<{
 			network?: NetworkErrorDiagnostic;
 			upstreamStatus?: number;
+			validation?: 'age_retention';
 		}> = {}
 	) {
 		super(message);
@@ -95,7 +97,8 @@ export function applySpans(
 	rawMessage: string,
 	spans: readonly ScrubSpan[],
 	categories: readonly string[],
-	inventory: Record<string, number>
+	inventory: Record<string, number>,
+	semanticValidation?: ScrubberConfig['semanticValidation']
 ): { text: string; spanCount: number } {
 	const allowed = new Set(categories);
 	const byText = new Map<string, ScrubSpan>();
@@ -158,6 +161,21 @@ export function applySpans(
 		}
 	}
 
+	if (semanticValidation) {
+		if (semanticValidation !== 'jan-v13-age-retention-v1') {
+			throw new ScrubberError('Unsupported redaction validation policy', 'scrub_invalid_output', true);
+		}
+		const protectedRanges = janV13ProtectedRanges(rawMessage);
+		if (claimed.some((occurrence) => protectedRanges.some((range) =>
+			occurrence.start < range.end && occurrence.end > range.start
+		))) {
+			// Reject the entire attempt before any output is assembled. Never
+			// remove a reported span or restore potentially identifying text.
+			throw new ScrubberError('Redaction report violates a retention rule', 'scrub_invalid_output', true, {
+				validation: 'age_retention'
+			});
+		}
+	}
 	claimed.sort((a, b) => a.start - b.start);
 	let text = '';
 	let position = 0;
@@ -263,7 +281,8 @@ function parseSpanReport(content: string): ScrubSpan[] {
 function scrubCallInput(
 	userMessage: string,
 	history: readonly HistoryMessage[],
-	inventory: Record<string, number>
+	inventory: Record<string, number>,
+	semanticValidation?: ScrubberConfig['semanticValidation']
 ): string {
 	// Redacted prior user turns give the model coreference context ("anything
 	// else in [CITY_1]?") without shipping long assistant answers. History
@@ -276,7 +295,18 @@ function scrubCallInput(
 	return JSON.stringify({
 		usedPlaceholders: inventory,
 		recentUserTurns,
-		newUserMessage: userMessage
+		newUserMessage: userMessage,
+		// Only the opt-in policy gets this server-derived guidance. Existing
+		// revisions retain exactly their original three-field request bytes.
+		...(semanticValidation === 'jan-v13-age-retention-v1' ? {
+			serverRetention: {
+				policy: semanticValidation,
+				indexUnit: 'utf16',
+				ranges: janV13ProtectedRanges(userMessage).map(({ start, end }) => ({
+					start, end, text: userMessage.slice(start, end)
+				}))
+			}
+		} : {})
 	});
 }
 
@@ -308,6 +338,7 @@ async function attemptModel(args: {
 	inventory: Record<string, number>;
 	apiKey: string;
 	clientSignal: AbortSignal;
+	semanticValidation?: ScrubberConfig['semanticValidation'];
 }): Promise<{ text: string; spanCount: number }> {
 	const timeoutAbort = new AbortController();
 	const timer = setTimeout(() => timeoutAbort.abort(new Error('scrub_timeout')), args.timeoutMs);
@@ -369,7 +400,7 @@ async function attemptModel(args: {
 			throw new ScrubberError('Redaction screen returned no report', 'scrub_invalid_output', true);
 		}
 		const spans = parseSpanReport(content);
-		return applySpans(args.rawMessage, spans, args.categories, args.inventory);
+		return applySpans(args.rawMessage, spans, args.categories, args.inventory, args.semanticValidation);
 	} finally {
 		clearTimeout(timer);
 	}
@@ -384,7 +415,7 @@ export async function scrubUserMessage(args: {
 }): Promise<ScrubResult> {
 	const { scrubber } = args;
 	const inventory = placeholderInventory(args.history, scrubber.categories);
-	const input = scrubCallInput(args.userMessage, args.history, inventory);
+	const input = scrubCallInput(args.userMessage, args.history, inventory, scrubber.semanticValidation);
 	const maxAttempts = Math.min(Math.max(scrubber.maxAttempts, 1), 3);
 	const shared = {
 		prompt: scrubber.prompt,
@@ -393,6 +424,7 @@ export async function scrubUserMessage(args: {
 		input,
 		rawMessage: args.userMessage,
 		inventory,
+		semanticValidation: scrubber.semanticValidation,
 		apiKey: args.apiKey,
 		clientSignal: args.clientSignal
 	};

@@ -1,0 +1,323 @@
+{
+  "schemaVersion": 1,
+  "configurations": [
+    {
+      "condition": "flu",
+      "configVersion": "albertsons-2026-flu-v13",
+      "configHash": "7dd1e0f532847f13c7c22bccad2ebbce861baea00c423aa16f71a1b8307a0827",
+      "themeId": "albertsons-v1",
+      "headerTitle": "Flu vaccine information",
+      "headerSubtitle": "Ask a question or browse common topics",
+      "systemPromptSha256": "71eec3a73b9d962f965959972b38eef1baa1f2101dc60aa62c0bed66760ff9f6",
+      "initialMessagesSha256": "f49568f3cb05c68278323d77dbf5ea959f5fabb133a0228f78e96e72fbcd9480",
+      "model": "anthropic/claude-opus-5",
+      "reasoning": {
+        "effort": "low",
+        "exclude": true
+      },
+      "maxTokens": 4000,
+      "providerOrder": null,
+      "providerOnly": [
+        "google-vertex/us",
+        "amazon-bedrock/us-east-1"
+      ],
+      "zdr": true,
+      "dataCollection": "deny",
+      "allowFallbacks": true,
+      "requireParameters": true,
+      "scrubber": {
+        "model": "google/gemini-3.1-flash-lite",
+        "providerOnly": [
+          "google-vertex/us"
+        ],
+        "zdr": true,
+        "dataCollection": "deny",
+        "allowFallbacks": false,
+        "requireParameters": true,
+        "maxTokens": 1200,
+        "reasoning": null,
+        "fallbackModel": {
+          "model": "anthropic/claude-sonnet-5",
+          "providerOnly": [
+            "google-vertex/us",
+            "amazon-bedrock/us-east-1"
+          ],
+          "zdr": true,
+          "temperature": null
+        },
+        "promptSha256": "5f9afbd44dcf90d17fdc04688a739ff39bf3bba1aafd8f42f3b9bf65c1f8c7ff",
+        "categories": [
+          "NAME",
+          "ADDRESS",
+          "DATES",
+          "PHONE",
+          "FAX",
+          "EMAIL",
+          "SSN",
+          "MRN",
+          "HPBN",
+          "ACCOUNT",
+          "LICENSE",
+          "VEHICLE",
+          "DEVICE",
+          "URL",
+          "IP",
+          "BIOMETRIC",
+          "PHOTO",
+          "ID"
+        ],
+        "timeoutMs": 8000,
+        "maxAttempts": 2,
+        "semanticValidation": "jan-v13-age-retention-v1"
+      },
+      "runtimePolicy": {
+        "protocolVersion": 2,
+        "sessionTtlSeconds": 3600,
+        "checkpointHandleTtlSeconds": 86400,
+        "maxClockSkewSeconds": 30,
+        "maxSessionRequestBytes": 1024,
+        "maxTurns": 35,
+        "maxHistoryMessages": 70,
+        "maxSnapshotMessages": 200,
+        "maxCaptureErrors": 20,
+        "maxUserCodePoints": 1500,
+        "maxAssistantCodePoints": 16000,
+        "maxChatRequestBytes": 340000,
+        "maxContextUtf8Bytes": 320000,
+        "maxTranscriptUtf16CodeUnits": 240000,
+        "maxTranscriptUtf8Bytes": 280000,
+        "maxCheckpointRequestBytes": 400000,
+        "checkpointChunkSize": 12000,
+        "checkpointChunkCount": 24,
+        "providerFirstByteTimeoutMs": 45000,
+        "providerStreamIdleTimeoutMs": 30000,
+        "providerHardTimeoutMs": 180000,
+        "providerMaxAttempts": 1,
+        "providerMaxRetryAfterMs": 5000,
+        "providerDefaultRetryDelayMs": 500,
+        "providerRetryableStatusCodes": [
+          429,
+          500,
+          502,
+          503,
+          504
+        ],
+        "maxProviderSseEventChars": 65536,
+        "checkpointUpstreamTimeoutMs": 20000,
+        "checkpointUpstreamMaxAttempts": 1
+      }
+    },
+    {
+      "condition": "covid",
+      "configVersion": "albertsons-2026-covid-v13",
+      "configHash": "509b61268566f4c7846922c8372e879838ace02b4680f0bb8477973c07568bb3",
+      "themeId": "albertsons-v1",
+      "headerTitle": "COVID-19 vaccine information",
+      "headerSubtitle": "Ask a question or browse common topics",
+      "systemPromptSha256": "9b1d402b20aea52f16b1d7bed4d6d8fcbf179124b2bb941bd025b7fb0c585512",
+      "initialMessagesSha256": "1b5eec3da7a21cc751a0409960f705cc2c1c23e485958315617a3a9b8e92f2dc",
+      "model": "anthropic/claude-opus-5",
+      "reasoning": {
+        "effort": "low",
+        "exclude": true
+      },
+      "maxTokens": 4000,
+      "providerOrder": null,
+      "providerOnly": [
+        "google-vertex/us",
+        "amazon-bedrock/us-east-1"
+      ],
+      "zdr": true,
+      "dataCollection": "deny",
+      "allowFallbacks": true,
+      "requireParameters": true,
+      "scrubber": {
+        "model": "google/gemini-3.1-flash-lite",
+        "providerOnly": [
+          "google-vertex/us"
+        ],
+        "zdr": true,
+        "dataCollection": "deny",
+        "allowFallbacks": false,
+        "requireParameters": true,
+        "maxTokens": 1200,
+        "reasoning": null,
+        "fallbackModel": {
+          "model": "anthropic/claude-sonnet-5",
+          "providerOnly": [
+            "google-vertex/us",
+            "amazon-bedrock/us-east-1"
+          ],
+          "zdr": true,
+          "temperature": null
+        },
+        "promptSha256": "5f9afbd44dcf90d17fdc04688a739ff39bf3bba1aafd8f42f3b9bf65c1f8c7ff",
+        "categories": [
+          "NAME",
+          "ADDRESS",
+          "DATES",
+          "PHONE",
+          "FAX",
+          "EMAIL",
+          "SSN",
+          "MRN",
+          "HPBN",
+          "ACCOUNT",
+          "LICENSE",
+          "VEHICLE",
+          "DEVICE",
+          "URL",
+          "IP",
+          "BIOMETRIC",
+          "PHOTO",
+          "ID"
+        ],
+        "timeoutMs": 8000,
+        "maxAttempts": 2,
+        "semanticValidation": "jan-v13-age-retention-v1"
+      },
+      "runtimePolicy": {
+        "protocolVersion": 2,
+        "sessionTtlSeconds": 3600,
+        "checkpointHandleTtlSeconds": 86400,
+        "maxClockSkewSeconds": 30,
+        "maxSessionRequestBytes": 1024,
+        "maxTurns": 35,
+        "maxHistoryMessages": 70,
+        "maxSnapshotMessages": 200,
+        "maxCaptureErrors": 20,
+        "maxUserCodePoints": 1500,
+        "maxAssistantCodePoints": 16000,
+        "maxChatRequestBytes": 340000,
+        "maxContextUtf8Bytes": 320000,
+        "maxTranscriptUtf16CodeUnits": 240000,
+        "maxTranscriptUtf8Bytes": 280000,
+        "maxCheckpointRequestBytes": 400000,
+        "checkpointChunkSize": 12000,
+        "checkpointChunkCount": 24,
+        "providerFirstByteTimeoutMs": 45000,
+        "providerStreamIdleTimeoutMs": 30000,
+        "providerHardTimeoutMs": 180000,
+        "providerMaxAttempts": 1,
+        "providerMaxRetryAfterMs": 5000,
+        "providerDefaultRetryDelayMs": 500,
+        "providerRetryableStatusCodes": [
+          429,
+          500,
+          502,
+          503,
+          504
+        ],
+        "maxProviderSseEventChars": 65536,
+        "checkpointUpstreamTimeoutMs": 20000,
+        "checkpointUpstreamMaxAttempts": 1
+      }
+    },
+    {
+      "condition": "combo",
+      "configVersion": "albertsons-2026-combo-v13",
+      "configHash": "606eefe6af83121633487e38f5fa6a7beaa79a87b2ddf1a6b2153646182f0d93",
+      "themeId": "albertsons-v1",
+      "headerTitle": "Flu & COVID-19 vaccine information",
+      "headerSubtitle": "Ask a question or browse common topics",
+      "systemPromptSha256": "4d81af8f445a8d3f7188b627c8eeb7cb4e1214224017fba6bacef3e0a1842263",
+      "initialMessagesSha256": "7453bb4d6504a2bfa0ebb9208ee2962f4e76dd9446945cb296985c53464da494",
+      "model": "anthropic/claude-opus-5",
+      "reasoning": {
+        "effort": "low",
+        "exclude": true
+      },
+      "maxTokens": 4000,
+      "providerOrder": null,
+      "providerOnly": [
+        "google-vertex/us",
+        "amazon-bedrock/us-east-1"
+      ],
+      "zdr": true,
+      "dataCollection": "deny",
+      "allowFallbacks": true,
+      "requireParameters": true,
+      "scrubber": {
+        "model": "google/gemini-3.1-flash-lite",
+        "providerOnly": [
+          "google-vertex/us"
+        ],
+        "zdr": true,
+        "dataCollection": "deny",
+        "allowFallbacks": false,
+        "requireParameters": true,
+        "maxTokens": 1200,
+        "reasoning": null,
+        "fallbackModel": {
+          "model": "anthropic/claude-sonnet-5",
+          "providerOnly": [
+            "google-vertex/us",
+            "amazon-bedrock/us-east-1"
+          ],
+          "zdr": true,
+          "temperature": null
+        },
+        "promptSha256": "5f9afbd44dcf90d17fdc04688a739ff39bf3bba1aafd8f42f3b9bf65c1f8c7ff",
+        "categories": [
+          "NAME",
+          "ADDRESS",
+          "DATES",
+          "PHONE",
+          "FAX",
+          "EMAIL",
+          "SSN",
+          "MRN",
+          "HPBN",
+          "ACCOUNT",
+          "LICENSE",
+          "VEHICLE",
+          "DEVICE",
+          "URL",
+          "IP",
+          "BIOMETRIC",
+          "PHOTO",
+          "ID"
+        ],
+        "timeoutMs": 8000,
+        "maxAttempts": 2,
+        "semanticValidation": "jan-v13-age-retention-v1"
+      },
+      "runtimePolicy": {
+        "protocolVersion": 2,
+        "sessionTtlSeconds": 3600,
+        "checkpointHandleTtlSeconds": 86400,
+        "maxClockSkewSeconds": 30,
+        "maxSessionRequestBytes": 1024,
+        "maxTurns": 35,
+        "maxHistoryMessages": 70,
+        "maxSnapshotMessages": 200,
+        "maxCaptureErrors": 20,
+        "maxUserCodePoints": 1500,
+        "maxAssistantCodePoints": 16000,
+        "maxChatRequestBytes": 340000,
+        "maxContextUtf8Bytes": 320000,
+        "maxTranscriptUtf16CodeUnits": 240000,
+        "maxTranscriptUtf8Bytes": 280000,
+        "maxCheckpointRequestBytes": 400000,
+        "checkpointChunkSize": 12000,
+        "checkpointChunkCount": 24,
+        "providerFirstByteTimeoutMs": 45000,
+        "providerStreamIdleTimeoutMs": 30000,
+        "providerHardTimeoutMs": 180000,
+        "providerMaxAttempts": 1,
+        "providerMaxRetryAfterMs": 5000,
+        "providerDefaultRetryDelayMs": 500,
+        "providerRetryableStatusCodes": [
+          429,
+          500,
+          502,
+          503,
+          504
+        ],
+        "maxProviderSseEventChars": 65536,
+        "checkpointUpstreamTimeoutMs": 20000,
+        "checkpointUpstreamMaxAttempts": 1
+      }
+    }
+  ]
+}
