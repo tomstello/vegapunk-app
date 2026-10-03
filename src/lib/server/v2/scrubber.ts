@@ -281,7 +281,8 @@ function parseSpanReport(content: string): ScrubSpan[] {
 function scrubCallInput(
 	userMessage: string,
 	history: readonly HistoryMessage[],
-	inventory: Record<string, number>
+	inventory: Record<string, number>,
+	semanticValidation?: ScrubberConfig['semanticValidation']
 ): string {
 	// Redacted prior user turns give the model coreference context ("anything
 	// else in [CITY_1]?") without shipping long assistant answers. History
@@ -294,7 +295,18 @@ function scrubCallInput(
 	return JSON.stringify({
 		usedPlaceholders: inventory,
 		recentUserTurns,
-		newUserMessage: userMessage
+		newUserMessage: userMessage,
+		// Only the opt-in policy gets this server-derived guidance. Existing
+		// revisions retain exactly their original three-field request bytes.
+		...(semanticValidation === 'jan-v13-age-retention-v1' ? {
+			serverRetention: {
+				policy: semanticValidation,
+				indexUnit: 'utf16',
+				ranges: janV13ProtectedRanges(userMessage).map(({ start, end }) => ({
+					start, end, text: userMessage.slice(start, end)
+				}))
+			}
+		} : {})
 	});
 }
 
@@ -403,7 +415,7 @@ export async function scrubUserMessage(args: {
 }): Promise<ScrubResult> {
 	const { scrubber } = args;
 	const inventory = placeholderInventory(args.history, scrubber.categories);
-	const input = scrubCallInput(args.userMessage, args.history, inventory);
+	const input = scrubCallInput(args.userMessage, args.history, inventory, scrubber.semanticValidation);
 	const maxAttempts = Math.min(Math.max(scrubber.maxAttempts, 1), 3);
 	const shared = {
 		prompt: scrubber.prompt,

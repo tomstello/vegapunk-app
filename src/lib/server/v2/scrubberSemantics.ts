@@ -6,6 +6,9 @@ export type ProtectedRange = Readonly<{ start: number; end: number }>;
 // recognized grammar. All offsets refer to the original UTF-16 string.
 // Once released, changing this grammar requires a new semanticValidation
 // revision so retained configurations keep the same validator behavior.
+// jan-v13-age-retention-v1 also sends these same ranges as serverRetention:
+// { policy, indexUnit: 'utf16', ranges: [{ start, end, text }] }, with inclusive
+// start and exclusive end. Guidance never substitutes for output validation.
 const CURRENT_AGE = /^(?:I(?:[ \t]+am|['’]m)|my[ \t]+(?:current[ \t]+)?age[ \t]+is)[ \t]+(?:(?:still|currently|now)[ \t]+)?(?<age>(?:[0-8]?\d|eighty[- ]nine)(?:[ \t]+years[ \t]+(?:old|of[ \t]+age))?)$/i;
 const BIRTH_THEN_AGE = /^I[ \t]+was[ \t]+born[ \t]+in[ \t]+(?<year>1936)[ \t]+and[ \t]+(?:I[ \t]+)?am[ \t]+(?:(?:still|currently|now)[ \t]+)?(?<age>(?:89|eighty[- ]nine)(?:[ \t]+years[ \t]+(?:old|of[ \t]+age))?)$/i;
 const AGE_THEN_BIRTH = /^I(?:[ \t]+am|['’]m)[ \t]+(?:(?:still|currently|now)[ \t]+)?(?<age>(?:89|eighty[- ]nine)(?:[ \t]+years[ \t]+(?:old|of[ \t]+age))?)[ \t]+and[ \t]+(?:I[ \t]+)?was[ \t]+born[ \t]+in[ \t]+(?<year>1936)$/i;
