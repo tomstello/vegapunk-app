@@ -1141,18 +1141,19 @@ export function getStudyConfig(condition: StudyCondition): StudyConfig {
 	return ACTIVE_REGISTRY[condition];
 }
 
-// Revisions that partner-facing PREVIEW surveys are bound to. A survey bound
-// to one of these keeps starting NEW sessions on its own revision after later
-// deployments (Albertsons received r8/v9 preview links on 2026-08-1x). Every
-// other historical revision stays resume-only, so a stale Cornell import can
-// never silently go live. Preview revisions predate the redaction screen only
-// if listed here — keep this list to revisions that were themselves shippable.
-// Remove an entry once the corresponding preview links are retired.
-const PREVIEW_PRESERVED_VERSIONS: Readonly<Record<StudyCondition, readonly string[]>> = Object.freeze({
+// Explicitly retained survey bindings may start NEW sessions on their own
+// immutable revision after an application deploy. v9 supports the existing
+// partner previews. v12 supports the published production surveys while Jan
+// imports/publishes the v13 QSFs; deploying v13 must not strand those surveys.
+// A v12-bound survey continues using v12's redaction policy, not v13's. Remove
+// that allowance in a later release only after every v12 survey is retired.
+// All other historical revisions remain resume-only. This is a narrow
+// allowlist, not permission for an arbitrary stale survey to go live.
+const NEW_SESSION_PRESERVED_VERSIONS: Readonly<Record<StudyCondition, readonly string[]>> = Object.freeze({
 	demo: Object.freeze([]),
-	flu: Object.freeze(['albertsons-2026-flu-v9']),
-	covid: Object.freeze(['albertsons-2026-covid-v9']),
-	combo: Object.freeze(['albertsons-2026-combo-v9'])
+	flu: Object.freeze(['albertsons-2026-flu-v9', 'albertsons-2026-flu-v12']),
+	covid: Object.freeze(['albertsons-2026-covid-v9', 'albertsons-2026-covid-v12']),
+	combo: Object.freeze(['albertsons-2026-combo-v9', 'albertsons-2026-combo-v12'])
 });
 
 export function getStudyConfigForNewSession(
@@ -1161,7 +1162,7 @@ export function getStudyConfigForNewSession(
 ): StudyConfig {
 	if (
 		preferredConfigVersion &&
-		PREVIEW_PRESERVED_VERSIONS[condition].includes(preferredConfigVersion)
+		NEW_SESSION_PRESERVED_VERSIONS[condition].includes(preferredConfigVersion)
 	) {
 		const preserved = CONFIG_REVISIONS[condition].find(
 			(config) => config.configVersion === preferredConfigVersion

@@ -2261,17 +2261,26 @@ test('scrubber fallback is skipped for content-deterministic failures and absent
 	}
 });
 
-test('preview-preserved revisions serve new sessions; all other historical revisions stay resume-only', () => {
+test('v9 previews and published v12 surveys retain their revisions while v13 becomes active', () => {
 	for (const arm of ['flu', 'covid', 'combo']) {
 		const active = configs.getStudyConfig(arm);
 		// No preference → active.
+		assert.equal(active.configVersion, `albertsons-2026-${arm}-v13`);
 		assert.equal(configs.getStudyConfigForNewSession(arm).configVersion, active.configVersion);
 		// Allowlisted preview revision (Albertsons r8/v9 links) → honored.
 		const preserved = configs.getStudyConfigForNewSession(arm, `albertsons-2026-${arm}-v9`);
 		assert.equal(preserved.configVersion, `albertsons-2026-${arm}-v9`);
 		assert.equal(preserved.configHash, V9_CONFIG_HASHES[arm]);
+		// Deploying the app first must not break the still-published v12 survey.
+		// It keeps the old immutable policy until its QSF explicitly requests v13.
+		const publishedV12 = configs.getStudyConfigForNewSession(arm, `albertsons-2026-${arm}-v12`);
+		assert.equal(publishedV12, configs.getStudyConfigRevision(arm, `albertsons-2026-${arm}-v12`, V12_CONFIG_HASHES[arm]));
+		assert.equal(publishedV12.configHash, V12_CONFIG_HASHES[arm]);
+		assert.deepEqual([...publishedV12.scrubber.categories], ['NAME', 'PHONE', 'EMAIL', 'ADDRESS', 'ID', 'DOB', 'CITY']);
+		assert.equal(configs.getStudyConfigForNewSession(arm, `albertsons-2026-${arm}-v13`), active);
+		assert.equal(active.configHash, V13_CONFIG_HASHES[arm]);
 		// Any other historical revision → NOT honored (survey-side gate must fail visibly).
-		for (const stale of ['v6', 'v7', 'v8', 'v10', 'v11', 'v12']) {
+		for (const stale of ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v10', 'v11']) {
 			assert.equal(
 				configs.getStudyConfigForNewSession(arm, `albertsons-2026-${arm}-${stale}`).configVersion,
 				active.configVersion,
@@ -2280,7 +2289,11 @@ test('preview-preserved revisions serve new sessions; all other historical revis
 		}
 		// Unknown/garbage preference → active.
 		assert.equal(configs.getStudyConfigForNewSession(arm, 'albertsons-2026-flu-v999').configVersion, active.configVersion);
+		// A binding for a different arm cannot select that arm's legacy policy.
+		const otherArm = arm === 'flu' ? 'covid' : 'flu';
+		assert.equal(configs.getStudyConfigForNewSession(arm, `albertsons-2026-${otherArm}-v12`), active);
 	}
+	assert.equal(configs.getStudyConfigForNewSession('demo', 'albertsons-2026-flu-v12'), configs.getStudyConfig('demo'));
 	// Schema accepts the optional field and still rejects unknown keys.
 	assert.equal(schemas.SessionRequestSchema.safeParse({ v: 2, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID, preferredConfigVersion: 'albertsons-2026-flu-v9' }).success, true);
 	assert.equal(schemas.SessionRequestSchema.safeParse({ v: 2, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID, preferredConfigVersion: '' }).success, false);
