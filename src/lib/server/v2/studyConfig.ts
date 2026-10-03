@@ -635,7 +635,7 @@ Report a span for each of these found in newUserMessage:
 - EMAIL: email addresses.
 - SSN: social security numbers.
 - MRN: medical record numbers.
-- HPBN: health plan beneficiary numbers.
+- HPBN: health-insurance or health-plan beneficiary identifiers. A generic pharmacy or retail loyalty/membership identifier is ID, not HPBN, unless the message explicitly describes it as identifying health-plan coverage. Do not infer insurance coverage merely from the word pharmacy.
 - ACCOUNT: account numbers.
 - LICENSE: Certificate/license numbers.
 - VEHICLE: vehicle identifiers and serial numbers, including license plate numbers.
