@@ -68,6 +68,7 @@
     {"id":"date-birth-certain-90-boundary","text":"My birth year is 1935.","expected":[{"text":"1935","category":"DATES"}]},
     {"id":"address-zip-prefix-rephrased","text":"My ZIP starts with 902.","expected":[{"text":"902","category":"ADDRESS"}]},
     {"id":"age-relative-numeric-collision","text":"My aunt is 92 years old; the vaccine leaflet is 92 pages long.","expected":[{"text":"92","category":"DATES","occurrence":0}],"allowRedact":["years old"],"retain":["My aunt is",{"text":"92","occurrence":1},"pages long"]},
-    {"id":"age-written-boundary-mixed","text":"I am eighty-nine years old; my brother is ninety-two years old.","expected":[{"text":"ninety-two","category":"DATES"}],"allowRedact":[{"text":"years old","occurrence":1}],"retain":["eighty-nine years old","my brother is"]}
+    {"id":"age-written-boundary-mixed","text":"I am eighty-nine years old; my brother is ninety-two years old.","expected":[{"text":"ninety-two","category":"DATES"}],"allowRedact":[{"text":"years old","occurrence":1}],"retain":["eighty-nine years old","my brother is"]},
+    {"id":"interaction-name-url-birth-current-89","text":"My name is Alex Example. My webpage is https://example.invalid/test. I was born in 1936 and am still 89 years old. Can flu and COVID vaccines be given together?","expected":[{"text":"Alex Example","category":"NAME"},{"text":"https://example.invalid/test","category":"URL"}],"retain":["1936","89 years old","Can flu and COVID vaccines be given together?"]}
   ]
 }

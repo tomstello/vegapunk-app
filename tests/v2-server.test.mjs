@@ -121,9 +121,9 @@ const V12_CONFIG_HASHES = Object.freeze({
 	combo: 'fe2ef5e361c0c3bc72fa1673536b820bbb0310e1cb16dae54f3981d3e429f020'
 });
 const V13_CONFIG_HASHES = Object.freeze({
-	flu: '0e51e7125d221dc1631ba166a6ba1bf4e25ee57a9b26a734c8df5378782847b6',
-	covid: '5f12ace6159392fa6e5b2a0cc061df64d4ba3a256ed4e75c93b337261d5cfd9e',
-	combo: '95ad161a4287497265862227f01cbfc924231ce2a0e1fe8df0d5b9e157051a88'
+	flu: '5a54398beb720b25135e878a20f4a16fd1a6c1435077c7df00471e1ead8f2db8',
+	covid: 'acb3cefaa8977517d5347bbef1aee21754cb3cd2fde7fb53c668a30902bb1f0a',
+	combo: '8deac1c664cfcde49f9e1db672b6169f7f5168d8c655c0df17998848bfe24bf7'
 });
 const V13_SCRUB_CATEGORIES = Object.freeze([
 	'NAME', 'ADDRESS', 'DATES', 'PHONE', 'FAX', 'EMAIL', 'SSN', 'MRN', 'HPBN',
@@ -1851,6 +1851,111 @@ test('v13 malformed, obsolete-category, and non-verbatim reports fail closed aft
 				}
 			);
 			assert.deepEqual(models, [policy.model.name, policy.fallbackModel.name]);
+		}
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+const RETENTION_GUARD = 'jan-v13-age-retention-v1';
+const CORNELL_INTERACTION = 'My name is Alex Example. My webpage is https://example.invalid/test. I was born in 1936 and am still 89 years old. Can flu and COVID vaccines be given together?';
+const CORNELL_GOOD_SPANS = [
+	{ text: 'Alex Example', category: 'NAME' },
+	{ text: 'https://example.invalid/test', category: 'URL' }
+];
+
+test('v13 retention validation is hashed and absent from retained revisions', () => {
+	const { configHash, ...material } = configs.getStudyConfig('flu');
+	assert.equal(material.scrubber.semanticValidation, RETENTION_GUARD);
+	const oldPolicy = { ...material.scrubber };
+	delete oldPolicy.semanticValidation;
+	assert.notEqual(configs.hashStudyConfigMaterial({ ...material, scrubber: oldPolicy }), configHash);
+	for (const arm of ['flu', 'covid', 'combo']) {
+		const v12 = configs.getStudyConfigRevision(arm, `albertsons-2026-${arm}-v12`, V12_CONFIG_HASHES[arm]);
+		assert.equal(v12.scrubber.semanticValidation, undefined);
+	}
+	assert.equal(configs.getStudyConfig('demo').scrubber.semanticValidation, undefined);
+});
+
+test('v13 retention validation rejects actual protected overlaps without changing any spans', () => {
+	const apply = (text, spans, policy = RETENTION_GUARD) =>
+		scrubber.applySpans(text, spans, V13_SCRUB_CATEGORIES, {}, policy);
+	const invalid = (error) => error instanceof scrubber.ScrubberError && error.code === 'scrub_invalid_output' && error.retryable;
+	const good = apply(CORNELL_INTERACTION, CORNELL_GOOD_SPANS);
+	assert.equal(good.text, 'My name is [NAME_1]. My webpage is [URL_1]. I was born in 1936 and am still 89 years old. Can flu and COVID vaccines be given together?');
+	for (const text of ['1936', '89', '89 years old', '19', '36', 'born in 1936', '1936 and am still 89 years old']) {
+		for (const category of ['DATES', 'ID', 'NAME']) {
+			assert.throws(() => apply(CORNELL_INTERACTION, [...CORNELL_GOOD_SPANS, { text, category }]), invalid);
+		}
+	}
+	for (const [raw, value] of [
+		['I am 89 years old and was born in 1936.', '1936'],
+		["I'm still eighty-nine years old and I was born in 1936.", 'eighty-nine'],
+		['I am 89.', '89'], ["I'm 88 years old.", '88'],
+		['My current age is 47.', '47'], ['I was born in 1937.', '1937']
+	]) assert.throws(() => apply(raw, [{ text: value, category: 'DATES' }]), invalid);
+	// Existing configurations do not opt in to the new behavior.
+	assert.equal(scrubber.applySpans('I am 89.', [{ text: '89', category: 'ID' }], V13_SCRUB_CATEGORIES, {}).text, 'I am [ID_1].');
+});
+
+test('v13 retention validation respects subjects, tense, units, and repeated occurrences', () => {
+	const apply = (text, spans) => scrubber.applySpans(text, spans, V13_SCRUB_CATEGORIES, {}, RETENTION_GUARD);
+	const collision = 'I was born in 1936 and am still 89 years old. My mother was born in 1936 and is 90.';
+	assert.throws(() => apply(collision, [{ text: '1936', category: 'DATES' }]), /retention rule/);
+	// A unique span in the other person's clause does not overlap the self clause.
+	assert.equal(apply(collision, [{ text: '1936 and is 90', category: 'DATES' }]).text,
+		'I was born in 1936 and am still 89 years old. My mother was born in [DATES_1].');
+	for (const raw of [
+		'I am 89. My mother was born in 1936 and is 90.',
+		'I was born in 1936 and my mother is 89.',
+		'I was born in 1936; I am 89.',
+		'I was born in 1936 and am still 89 years old, but actually I turned 90.'
+	]) assert.ok(apply(raw, [{ text: '1936', category: 'DATES' }]).text.includes('[DATES_1]'));
+	assert.equal(apply('I was born in 1920 and am 89.', [{ text: '1920', category: 'DATES' }]).text, 'I was born in [DATES_1] and am 89.');
+	for (const raw of ['I was 89 years old.', 'I will be 89 years old.', 'I am 89 percent sure.', 'I am 89 kg.', 'She said "I am 89 years old".']) {
+		assert.ok(apply(raw, [{ text: '89', category: 'ID' }]).text.includes('[ID_1]'));
+	}
+	const identifierCollision = 'I am 89. My account is ACC-89.';
+	assert.equal(apply(identifierCollision, [{ text: 'ACC-89', category: 'ACCOUNT' }]).text, 'I am 89. My account is [ACCOUNT_1].');
+	assert.throws(() => apply(identifierCollision, [{ text: '89', category: 'ACCOUNT' }]), /retention rule/);
+});
+
+test('v13 semantic rejection retries, falls back, and fails closed without restoring text', async () => {
+	const originalFetch = globalThis.fetch;
+	const policy = configs.getStudyConfig('flu').scrubber;
+	try {
+		for (const succeedsOn of [2, 3, Infinity]) {
+			const models = [];
+			globalThis.fetch = async (_url, init) => {
+				models.push(JSON.parse(String(init.body)).model);
+				return scrubProviderResponse(models.length === succeedsOn
+					? CORNELL_GOOD_SPANS
+					: [...CORNELL_GOOD_SPANS, { text: '1936', category: 'DATES' }]);
+			};
+			const run = scrubber.scrubUserMessage({
+				scrubber: policy, history: [], userMessage: CORNELL_INTERACTION,
+				apiKey: 'unit-test-key', clientSignal: new AbortController().signal
+			});
+			if (Number.isFinite(succeedsOn)) {
+				const result = await run;
+				assert.equal(result.attempts, succeedsOn);
+				assert.equal(result.usedFallback, succeedsOn === 3);
+				assert.ok(result.text.includes('1936 and am still 89 years old'));
+				assert.equal(result.text.includes('Alex Example'), false);
+				assert.equal(result.text.includes('https://example.invalid/test'), false);
+			} else {
+				await assert.rejects(run, (error) => {
+					assert.equal(error.code, 'scrub_invalid_output');
+					assert.equal(error.retryable, true);
+					assert.deepEqual(error.diagnostic, { validation: 'age_retention' });
+					assert.equal(String(error).includes('1936'), false);
+					assert.equal(String(error).includes('Alex'), false);
+					return true;
+				});
+			}
+			assert.deepEqual(models, succeedsOn === 2
+				? [policy.model.name, policy.model.name]
+				: [policy.model.name, policy.model.name, policy.fallbackModel.name]);
 		}
 	} finally {
 		globalThis.fetch = originalFetch;

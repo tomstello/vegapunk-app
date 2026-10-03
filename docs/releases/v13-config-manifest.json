@@ -4,7 +4,7 @@
     {
       "condition": "flu",
       "configVersion": "albertsons-2026-flu-v13",
-      "configHash": "0e51e7125d221dc1631ba166a6ba1bf4e25ee57a9b26a734c8df5378782847b6",
+      "configHash": "5a54398beb720b25135e878a20f4a16fd1a6c1435077c7df00471e1ead8f2db8",
       "themeId": "albertsons-v1",
       "headerTitle": "Flu vaccine information",
       "headerSubtitle": "Ask a question or browse common topics",
@@ -67,7 +67,8 @@
           "ID"
         ],
         "timeoutMs": 8000,
-        "maxAttempts": 2
+        "maxAttempts": 2,
+        "semanticValidation": "jan-v13-age-retention-v1"
       },
       "runtimePolicy": {
         "protocolVersion": 2,
@@ -109,7 +110,7 @@
     {
       "condition": "covid",
       "configVersion": "albertsons-2026-covid-v13",
-      "configHash": "5f12ace6159392fa6e5b2a0cc061df64d4ba3a256ed4e75c93b337261d5cfd9e",
+      "configHash": "acb3cefaa8977517d5347bbef1aee21754cb3cd2fde7fb53c668a30902bb1f0a",
       "themeId": "albertsons-v1",
       "headerTitle": "COVID-19 vaccine information",
       "headerSubtitle": "Ask a question or browse common topics",
@@ -172,7 +173,8 @@
           "ID"
         ],
         "timeoutMs": 8000,
-        "maxAttempts": 2
+        "maxAttempts": 2,
+        "semanticValidation": "jan-v13-age-retention-v1"
       },
       "runtimePolicy": {
         "protocolVersion": 2,
@@ -214,7 +216,7 @@
     {
       "condition": "combo",
       "configVersion": "albertsons-2026-combo-v13",
-      "configHash": "95ad161a4287497265862227f01cbfc924231ce2a0e1fe8df0d5b9e157051a88",
+      "configHash": "8deac1c664cfcde49f9e1db672b6169f7f5168d8c655c0df17998848bfe24bf7",
       "themeId": "albertsons-v1",
       "headerTitle": "Flu & COVID-19 vaccine information",
       "headerSubtitle": "Ask a question or browse common topics",
@@ -277,7 +279,8 @@
           "ID"
         ],
         "timeoutMs": 8000,
-        "maxAttempts": 2
+        "maxAttempts": 2,
+        "semanticValidation": "jan-v13-age-retention-v1"
       },
       "runtimePolicy": {
         "protocolVersion": 2,

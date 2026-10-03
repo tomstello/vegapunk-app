@@ -310,6 +310,7 @@ async function main() {
 		provider: scrubberConfig.model.provider,
 		maxAttempts: scrubberConfig.maxAttempts,
 		fallbackEnabled: false,
+		semanticValidation: scrubberConfig.semanticValidation ?? null,
 		codeSource: 'current checkout; not a production inspection'
 	};
 
@@ -389,7 +390,8 @@ async function main() {
 		perCategory.set(category, entry);
 	};
 	const failures = [];
-	let verbatimFailures = 0;
+	let outputValidationFailures = 0;
+	let semanticValidationFailures = 0;
 	let modelFailureCases = 0;
 	const completedAttempts = [];
 
@@ -406,8 +408,10 @@ async function main() {
 			});
 		} catch (error) {
 			modelFailureCases += 1;
-			if (error?.code === 'scrub_invalid_output') verbatimFailures += 1;
-			failures.push({ id: fixture.id, error: error?.code ?? String(error) });
+			if (error?.code === 'scrub_invalid_output') outputValidationFailures += 1;
+			const validation = error?.diagnostic?.validation;
+			if (validation === 'age_retention') semanticValidationFailures += 1;
+			failures.push({ id: fixture.id, error: error?.code ?? String(error), ...(validation ? { validation } : {}) });
 			for (const expected of fixture.expected) {
 				for (const _ of locations(fixture.text, expected)) bump(expected.category, 'expected');
 			}
@@ -456,7 +460,8 @@ async function main() {
 				overallPrecision: totals.reported
 					? Number((totals.truePositives / totals.reported).toFixed(3))
 					: null,
-				verbatimFailures,
+				outputValidationFailures,
+				semanticValidationFailures,
 				latencyMs: {
 					p50: percentile(latencies, 0.5),
 					p95: percentile(latencies, 0.95),

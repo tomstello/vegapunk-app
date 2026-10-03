@@ -66,6 +66,8 @@ export type ScrubberConfig = {
 	categories: readonly string[];
 	timeoutMs: number;
 	maxAttempts: number;
+	// Optional and hashed: retained revisions must keep their original behavior.
+	semanticValidation?: 'jan-v13-age-retention-v1';
 };
 
 export type StudyConfig = {
@@ -677,7 +679,8 @@ const SCRUBBER_V3: ScrubberConfig = Object.freeze({
 	prompt: SCRUBBER_PROMPT_V3,
 	categories: SCRUB_CATEGORIES_V3,
 	timeoutMs: 8_000,
-	maxAttempts: 2
+	maxAttempts: 2,
+	semanticValidation: 'jan-v13-age-retention-v1'
 });
 
 // PENDING PI SIGN-OFF — "V7 SCRUB REVISION - design - 2026-08-11.md" §8.

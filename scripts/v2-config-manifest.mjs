@@ -63,7 +63,8 @@ const configurations = ['flu', 'covid', 'combo'].map((condition) => {
 					promptSha256: sha256(config.scrubber.prompt),
 					categories: [...config.scrubber.categories],
 					timeoutMs: config.scrubber.timeoutMs,
-					maxAttempts: config.scrubber.maxAttempts
+					maxAttempts: config.scrubber.maxAttempts,
+					semanticValidation: config.scrubber.semanticValidation ?? null
 				}
 			: null,
 		runtimePolicy: config.runtimePolicy
