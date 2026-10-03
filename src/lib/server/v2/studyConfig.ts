@@ -626,7 +626,7 @@ Inspect ONLY newUserMessage. recentUserTurns are earlier messages that were alre
 Report a span for each of these found in newUserMessage:
 - NAME: a real person's name (the user, family members, clinicians). Not brand, product, company, or organization names.
 - ADDRESS: all geographic subdivisions smaller than a state, including street address, city, county, precinct, ZIP code, and their equivalent geocodes.
-- DATES: All elements of dates (except year) for dates that are directly related to an individual, including birth date, admission date, discharge date, death date, and all ages over 89 and all elements of dates (including year) indicative of such age, except that such ages and elements may be aggregated into a single category of age 90 or older.
+- DATES: non-year elements of individual-related dates; ages 90 or older; and date elements including year that indicate such an age. Follow the ordered DATES rules below to decide what to remove and what to retain.
 - PHONE: phone numbers.
 - FAX: fax numbers.
 - EMAIL: email addresses.
@@ -645,11 +645,23 @@ Report a span for each of these found in newUserMessage:
 
 Apply these categories to exact text spans:
 - DATES replaces the old DOB category; ADDRESS includes the old CITY category. Use only the categories listed above. If an identifier fits a specific category (for example SSN or FAX), use that category rather than ID or PHONE.
-- For an individual's date, report only the non-year elements and leave an ordinary year untouched, even for a birth date. For example, in "born May 14, 1980" report "May 14", not "1980" or the whole date; in "DOB 1980-05-14" report "05-14". A birth year alone is retained unless it indicates age 90 or older. Individual vaccination or appointment dates are also individual-related dates; public historical dates and vaccine-season years are not.
-- For ages 90 or older, including ages written in words, report the exact age expression as DATES. Also report date elements, including birth year, that indicate such an age. Use the fixed study year 2026 for birth-year arithmetic: 1935 or earlier indicates age 90+; 1936 could indicate 89 or 90; 1937 or later cannot indicate age 90+ in 2026 (2026 minus 1937 is 89). Retain a 1937-or-later birth year. For 1936, first check the message for an explicit current age: if it establishes age below 90, retain both that age and the birth year; otherwise redact 1936 under uncertainty. Thus "born in 1936 and still 89" needs no redaction. These retention rules override the general preference to redact when uncertain. Do not invent a missing birth date or age or output a synthesized "90 or older" value.
-- Select the smallest age or date expression that avoids replacing the same bare number in unrelated text. For an age span, omit surrounding pronouns, linking verbs, and punctuation: in "I am 90 years old and paid 90 dollars" report exactly "90 years old", never "I am 90 years old" or the bare "90" that also occurs in the payment amount. For an ordinary date, the span must not include the year that should be retained.
+- Select only the identifier value, not its introductory words. A DATES span must exclude "born in", "DOB", "I am", relationship words, and surrounding punctuation. If the same number also appears in unrelated text, include the smallest age/date expression that distinguishes it (for example "90 years old" rather than a bare repeated "90"). Do not include an ordinary year in a non-year date span.
 - Redact a supplied ZIP code in full, including a partial ZIP or ZIP prefix identified as such in the message. There is no three-digit ZIP exception: "my ZIP starts with 100" requires ADDRESS span "100". State and country names on their own are not subdivisions smaller than a state.
 - The input is text only. BIOMETRIC and PHOTO apply only to identifying material represented in the supplied text; you cannot inspect a photograph, audio recording, attachment, or external URL. Generic mentions of photographs, fingerprints, or voices are not themselves identifying material. Report URLs as URL without visiting them.
+
+Ordered DATES rules (mandatory; KEEP means no span in any category):
+1. Classify each age of each person separately. If the stated age is below 90, KEEP it, including 89 and eighty-nine. If it is 90 or older, REDACT the age expression, including written ages and decades such as "nineties". Never treat 89 as 90.
+2. Classify each person's birth year using the fixed study year 2026. If the birth year is 1937 or later, KEEP the year. If it is 1936 AND the message explicitly says that same person is currently below 90, KEEP the year as well as their age. Otherwise, if the birth year is 1936 or earlier, REDACT the year. Do not infer that someone who explicitly says they are still 89 has already turned 90.
+3. For individual-related dates (birth, admission, discharge, death, vaccination, appointment), REDACT non-year elements such as month and day. KEEP the year except for date elements that indicate age 90+ under rule 2. Thus "May 14, 1980" yields "May 14", and "1980-05-14" yields "05-14". Date elements indicative of age 90+ are all redacted, including year.
+4. KEEP public historical dates and vaccine-season years. Do not invent a missing date or age. Return exact source text, never a synthesized "90 or older" value.
+
+Examples of complete output for the given newUserMessage:
+"I was born in 1936 and am still 89 years old." => {"spans":[]}
+"I was born in 1937." => {"spans":[]}
+"I was born in 1936." => {"spans":[{"text":"1936","category":"DATES"}]}
+"I was born in 1924." => {"spans":[{"text":"1924","category":"DATES"}]}
+"My grandfather is in his nineties." => {"spans":[{"text":"nineties","category":"DATES"}]}
+"I am 90 years old and paid 90 dollars." => {"spans":[{"text":"90 years old","category":"DATES"}]}
 
 Do NOT report: vaccine or medicine names; pharmacy or store brand names (for example Albertsons, Safeway); organization or agency names; ages in years (unless age is 90 or older); health conditions or symptoms; relationship words without a name (for example "my grandson"); or text that is already a placeholder such as [NAME_1].
 
@@ -657,7 +669,7 @@ Output exactly one JSON object and nothing else — no prose, no code fences:
 {"spans":[{"text":"<exact substring copied character-for-character from newUserMessage>","category":"<${SCRUB_CATEGORIES_V3.join('|')}>"}]}
 If nothing needs redaction: {"spans":[]}
 If the new message clearly refers to the same person or place as an existing placeholder, add "reuse": <that placeholder's number> to the span. When unsure, omit "reuse" and a new number will be assigned.
-Accuracy of the "text" field is critical: every value must appear verbatim in newUserMessage or the report is rejected. Prefer reporting a span when uncertain whether something identifies a person; missing real identifying information is worse than an extra redaction.`;
+Accuracy of the "text" field is critical: every value must appear verbatim in newUserMessage or the report is rejected. Before returning JSON, check every proposed span against the KEEP and Do NOT report rules. Those exclusions are mandatory; do not redact protected text as a precaution or relabel it as ID.`;
 
 const SCRUBBER_V3: ScrubberConfig = Object.freeze({
 	model: SCRUBBER_V1_PRIMARY_MODEL,
