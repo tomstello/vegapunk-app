@@ -121,9 +121,9 @@ const V12_CONFIG_HASHES = Object.freeze({
 	combo: 'fe2ef5e361c0c3bc72fa1673536b820bbb0310e1cb16dae54f3981d3e429f020'
 });
 const V13_CONFIG_HASHES = Object.freeze({
-	flu: 'cc90887085aeee0d9a18e69045b9b4a7408311f00909a3dbaac6d88cf9cd0754',
-	covid: '241aeec9ffa2d6b4f08c00b98ef4c3b71d6df7a748c80a7df313fec92b0cb6ad',
-	combo: 'c9b64b63ffb41b914a70ac677ceb08e670b513294a094e5d7053c273ab0346a8'
+	flu: 'e837c8df45a2e826f9a37e1bee69ed79c5ee85663fe11a558619b1d9216c8636',
+	covid: '9301082d6bef64b0e282aa86446767a7120861ef1a1aab4a6820fb9279939c33',
+	combo: '27331395017f632ef01aa1d6cc1b92c57a5702273357e286c3417c17ca09e333'
 });
 const V13_SCRUB_CATEGORIES = Object.freeze([
 	'NAME', 'ADDRESS', 'DATES', 'PHONE', 'FAX', 'EMAIL', 'SSN', 'MRN', 'HPBN',

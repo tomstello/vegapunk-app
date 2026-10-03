@@ -62,6 +62,12 @@
     {"id":"negative-existing-placeholder","text":"My clinician is [NAME_1], and my prior account was [ACCOUNT_2].","expected":[],"retain":["[NAME_1]","[ACCOUNT_2]"]},
     {"id":"history-numbering","history":["My clinician is [NAME_2]."],"text":"My pharmacist is Robin Example.","expected":[{"text":"Robin Example","category":"NAME","expectPlaceholder":"[NAME_3]"}]},
     {"id":"history-not-rescanned","history":["My name is [NAME_1] and my ZIP is [ADDRESS_1]."],"text":"Is the flu vaccine safe if I am 89?","expected":[],"retain":["flu vaccine","89"]},
-    {"id":"negative-product-year","text":"Is the 2026 flu vaccine different from the 2025 one?","expected":[],"retain":["2026","2025"]}
+    {"id":"negative-product-year","text":"Is the 2026 flu vaccine different from the 2025 one?","expected":[],"retain":["2026","2025"]},
+    {"id":"date-boundary-89-rephrased","text":"Born in 1936; my age is 89 today.","expected":[],"retain":["1936","89"]},
+    {"id":"date-below-90-full-date","text":"My birth date is December 2, 1938.","expected":[{"text":"December","category":"DATES"},{"text":"2","category":"DATES"}],"retain":["1938"]},
+    {"id":"date-birth-certain-90-boundary","text":"My birth year is 1935.","expected":[{"text":"1935","category":"DATES"}]},
+    {"id":"address-zip-prefix-rephrased","text":"My ZIP starts with 902.","expected":[{"text":"902","category":"ADDRESS"}]},
+    {"id":"age-relative-numeric-collision","text":"My aunt is 92 years old; the vaccine leaflet is 92 pages long.","expected":[{"text":"92","category":"DATES","occurrence":0}],"allowRedact":["years old"],"retain":["My aunt is",{"text":"92","occurrence":1},"pages long"]},
+    {"id":"age-written-boundary-mixed","text":"I am eighty-nine years old; my brother is ninety-two years old.","expected":[{"text":"ninety-two","category":"DATES"}],"allowRedact":[{"text":"years old","occurrence":1}],"retain":["eighty-nine years old","my brother is"]}
   ]
 }

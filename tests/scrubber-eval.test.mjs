@@ -116,7 +116,7 @@ test('Jan suite is synthetic, bounded and covers every requested label', async (
 	const suite = JSON.parse(await readFile(new URL('./fixtures/pii-jan-v13.json', import.meta.url), 'utf8'));
 	assert.equal(suite.synthetic, true);
 	const result = validateFixtures(suite, suite.categories);
-	assert.ok(result.cases >= 40 && result.cases <= 60);
+	assert.ok(result.cases >= 40 && result.cases <= 65);
 	assert.equal(suite.categories.length, 18);
 	assert.deepEqual(new Set(result.categories), new Set(suite.categories));
 	assert.ok(suite.cases.every((fixture) => [...fixture.text].length <= 1400));
