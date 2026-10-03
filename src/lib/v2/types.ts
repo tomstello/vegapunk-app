@@ -58,6 +58,9 @@ export interface V2PersistedState {
 	messages: V2Message[];
 	sequence: number;
 	historyTag: string;
+	// Server content receipts are browser-local recovery metadata, never part
+	// of canonical transcript JSON or the existing Qualtrics protocol.
+	messageReceipts?: Record<string, string>;
 	draft: string;
 	checkpointHandle: string | null;
 	lastAcknowledgedCheckpointRevision: number;
@@ -194,6 +197,8 @@ export interface ChatHistoryItem {
 }
 
 export interface ChatMetaEvent {
+	assistantMessageId?: string;
+	userReceipt?: string;
 	// Server-canonical (redacted) text for the just-sent user turn. Present
 	// exactly when the active revision runs the redaction screen; absent on
 	// older revisions, whose servers sign the raw text unchanged.
@@ -217,6 +222,8 @@ export interface CheckpointRequest {
 	reasonHint?: string;
 	transcriptJson: string;
 	checkpointHandle?: string;
+	historyTag?: string;
+	messageReceipts?: Record<string, string>;
 }
 
 export interface CheckpointResponse {

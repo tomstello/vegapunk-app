@@ -150,6 +150,28 @@ export function issueHistoryTag(args: {
 	return signCompactJson('v2t', claims, args.secret);
 }
 
+// A retained configuration may be resumed only by presenting a previously
+// issued history capability. Its session/attempt/config binding remains valid
+// when the one-hour request token expires; unscreened revisions are separately
+// denied by the public routes even when an old capability is genuine.
+export function verifyHistoryTagBinding(args: {
+	token: string;
+	secret: string;
+	session: Pick<SessionClaims, 'sid' | 'attempt' | 'condition' | 'configVersion' | 'configHash'>;
+}): HistoryClaims {
+	const claims = HistoryPayloadSchema.parse(verifyCompactJson(args.token, 'v2t', args.secret));
+	if (
+		claims.sid !== args.session.sid ||
+		claims.attempt !== args.session.attempt ||
+		claims.condition !== args.session.condition ||
+		claims.configVersion !== args.session.configVersion ||
+		claims.configHash !== args.session.configHash
+	) {
+		throw new Error('History proof belongs to a different session');
+	}
+	return claims;
+}
+
 export function verifyHistoryTag(args: {
 	token: string;
 	secret: string;

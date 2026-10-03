@@ -1,3 +1,5 @@
+import { captureCode, captureReason } from "./captureMetadata";
+import { checkpointProofFields } from "./checkpointProof";
 import {
 	MAX_ASSISTANT_CODE_POINTS,
 	MAX_CAPTURE_ERRORS,
@@ -102,7 +104,7 @@ export function serializeSnapshot(state: V2PersistedState): SerializedSnapshot {
 		createdAtISO: state.createdAtISO,
 		updatedAtISO: state.updatedAtISO,
 		chatEndISO: state.chatEndISO,
-		messages: state.messages.map((message) => ({ ...message })),
+		messages: state.messages.map((message) => ({ ...message, ...(message.failureReason === undefined ? {} : { failureReason: captureCode(message.failureReason) }) })),
 		counters: countMessages(state.messages),
 		checkpoint: {
 			hasHandle: state.checkpointHandle !== null,
@@ -113,7 +115,7 @@ export function serializeSnapshot(state: V2PersistedState): SerializedSnapshot {
 			lastAcknowledgedRevision: state.lastParentAcknowledgedRevision,
 			syncCount: state.parentSyncCount,
 		},
-		captureErrors: state.captureErrors.map((error) => ({ ...error })),
+		captureErrors: state.captureErrors.map((error) => ({ ...error, code: captureCode(error.code) })),
 	};
 
 	let json = "";
@@ -143,20 +145,20 @@ export function transcriptFits(serialized: SerializedSnapshot): boolean {
 }
 
 /**
- * The serialization-facing view of client state while user turns await their
- * server-canonical (redacted) text from the chat stream's meta event.
- *
- * Every persisted or transmitted artifact (sessionStorage state, parent
- * snapshot, checkpoint body, rollback clone) must be built from this view so
- * raw participant text never leaves component memory before redaction. The
- * excluded turn's raw text is parked in `draft` — browser-local by design —
- * so a reload puts the question back in the composer instead of losing it.
- * The filtered view is the consistent pre-turn conversation, so a non-
- * terminal in-flight lifecycle maps back to "ready"; terminal states are
- * preserved so an end-of-chat capture stays terminal.
- *
- * Identity when no turn is pending: the streaming hot path pays nothing.
- */
+* The serialization-facing view of client state while user turns await their
+* server-canonical (redacted) text from the chat stream's meta event.
+*
+* Every persisted or transmitted artifact (sessionStorage state, parent
+* snapshot, checkpoint body, rollback clone) must be built from this view so
+* raw participant text never leaves component memory before redaction. The
+* excluded turn's raw text is parked in `draft` — browser-local by design —
+* so a reload puts the question back in the composer instead of losing it.
+* The filtered view is the consistent pre-turn conversation, so a non-
+* terminal in-flight lifecycle maps back to "ready"; terminal states are
+* preserved so an end-of-chat capture stays terminal.
+*
+* Identity when no turn is pending: the streaming hot path pays nothing.
+*/
 export function canonicalView(
 	state: V2PersistedState,
 	pendingTurnIds: ReadonlySet<string>,
@@ -197,7 +199,8 @@ export function checkpointBodyFits(
 		createOperationId: state.createOperationId,
 		snapshotSequence: serialized.snapshot.snapshotSequence,
 		state: serialized.snapshot.state,
-		...(reasonHint ? { reasonHint } : {}),
+		...(reasonHint ? { reasonHint: captureReason(reasonHint) } : {}),
+		...checkpointProofFields(state, serialized.snapshot),
 		transcriptJson: serialized.json,
 		...(state.checkpointHandle
 			? { checkpointHandle: state.checkpointHandle }

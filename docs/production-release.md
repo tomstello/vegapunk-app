@@ -43,4 +43,14 @@ These are operator instructions, not commands executed by CI. Use the official V
 
 Record the currently working production deployment and survey configuration pins before release. If acceptance fails, pause enrollment/new chat starts and use Vercel Instant Rollback to the recorded working deployment, coordinated with the prior three Qualtrics pins. Existing older session revisions remain immutable in the application; removing versions or rewriting their hashes is not a rollback mechanism. A deployment created before v13 cannot satisfy a survey pinned to v13 or resume a v13 session; account for any v13 sessions already started when choosing the recovery plan. Recheck all three arms before reopening new starts and record the reason.
 
+## Session and checkpoint enforcement releases
+
+The session and checkpoint enforcement release rejects configurations that predate privacy screening on session, chat and checkpoint routes. Resuming a supported saved conversation requires its existing server-signed history proof. Completed histories can use that proof; current screened user messages and generated assistant prefixes use server-issued content receipts for checkpoint validation. Receipts remain outside canonical transcript JSON and the existing Qualtrics snapshot protocol.
+
+Already-open clients from before this release need a reload to send the new checkpoint proof fields. Completed saved histories remain verifiable. Historical unfinished or excluded content recovered only from the parent survey may have no content receipt; the server rejects unproven backup content without deleting the existing survey copy. Do not grandfather unproven content or silently attest it during migration. Historical records are not retroactively screened.
+
+Deployment URLs are part of the enforcement boundary. Enable Vercel Standard Protection (`ssoProtection.deploymentType = prod_deployment_urls_and_all_previews`) for this project so generated preview and previous-production URLs require Vercel authentication while the intended participant production domains remain public. Check the current mode before a release. Use authenticated deployment access for staging when protection is enabled; do not weaken protection or publish bypass credentials in a survey. After promotion, verify anonymously that both participant domains work and previous generated deployment URLs are protected. Keep the prior artifact for investigation, but do not roll back to a build that restores the known resume/checkpoint bypasses.
+
+Reference: [Vercel Authentication and Standard Protection](https://vercel.com/docs/deployment-protection/methods-to-protect-deployments/vercel-authentication).
+
 Provider references: [Git-triggered deployment configuration](https://vercel.com/docs/project-configuration/git-configuration), [Vercel deploy](https://vercel.com/docs/cli/deploy), [promoting deployments](https://vercel.com/docs/deployments/promoting-a-deployment).

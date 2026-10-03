@@ -1,3 +1,5 @@
+import { captureReason } from "./captureMetadata";
+import { checkpointProofFields } from "./checkpointProof";
 import { MAX_CHECKPOINT_BODY_BYTES, utf8Length } from "./constants";
 import type {
 	CheckpointRequest,
@@ -7,6 +9,7 @@ import type {
 import type { SerializedSnapshot } from "./snapshot";
 
 interface CheckpointJob {
+	proof: ReturnType<typeof checkpointProofFields>;
 	serialized: SerializedSnapshot;
 	reasonHint: string;
 	preferKeepalive: boolean;
@@ -71,7 +74,7 @@ export class CheckpointWorker {
 		preferKeepalive = false,
 	): void {
 		if (this.stopped) return;
-		this.pending = { serialized, reasonHint, preferKeepalive };
+		this.pending = { serialized, reasonHint, preferKeepalive, proof: checkpointProofFields(this.options.getState(), serialized.snapshot) };
 		if (!this.running) void this.drain();
 	}
 
@@ -120,7 +123,8 @@ export class CheckpointWorker {
 			createOperationId: state.createOperationId,
 			snapshotSequence: job.serialized.snapshot.snapshotSequence,
 			state: job.serialized.snapshot.state,
-			reasonHint: job.reasonHint.slice(0, 64),
+			reasonHint: captureReason(job.reasonHint),
+			...job.proof,
 			transcriptJson: job.serialized.json,
 			...(state.checkpointHandle
 				? { checkpointHandle: state.checkpointHandle }

@@ -9,7 +9,8 @@ import {
 	getStudyConfigRevision,
 	isStudyCondition
 } from '$lib/server/v2/studyConfig';
-import { issueHistoryTag, issueSessionToken, signingKey } from '$lib/server/v2/tokens';
+import { assertScreenedConfiguration } from '$lib/server/v2/provenance';
+import { issueHistoryTag, issueSessionToken, signingKey, verifyHistoryTagBinding } from '$lib/server/v2/tokens';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ request, params }) => {
@@ -42,6 +43,8 @@ export const POST: RequestHandler = async ({ request, params }) => {
 					'This saved chat uses a configuration revision that is no longer available'
 				);
 			}
+		try { assertScreenedConfiguration(config); }
+		catch { throw new V2HttpError(409, 'config_revision_unsupported', 'This older chat configuration is no longer supported'); }
 		const issued = issueSessionToken({
 			secret,
 			chatSessionKey: body.chatSessionKey,
@@ -50,6 +53,11 @@ export const POST: RequestHandler = async ({ request, params }) => {
 			configVersion: config.configVersion,
 			configHash: config.configHash
 		});
+		if (body.resumeConfig) {
+			const proof = request.headers.get('x-session-resume-proof') ?? '';
+			try { verifyHistoryTagBinding({ token: proof, secret, session: issued.claims }); }
+			catch { throw new V2HttpError(403, 'invalid_resume_proof', 'The saved chat could not be verified. Its existing data has not been changed.'); }
+		}
 		const historyTag = issueHistoryTag({
 			secret,
 			session: issued.claims,

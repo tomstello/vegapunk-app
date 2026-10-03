@@ -14,8 +14,14 @@ let crypto;
 let http;
 let scrubber;
 let s3;
+let provenance;
+const V1_CONFIG_HASHES = {
+	flu: 'fec05c53be6f3d6e78025fa8e80c48ba3945055287e3d2fb5023fa01f507536d',
+	covid: 'b536ba259c8f8653395291a8027e50cdd918adedb192eeca81a9678d6fde4b90',
+	combo: 'd4a7b9719f8257b88fbfb1f6012051beac9f673911be78557d54b91a41ad82ee'
+};
 
-async function loadServerModule(relativePath, privateEnv = {}) {
+async function loadServerModule(relativePath, privateEnv = {}, mocks = {}) {
 	const entryPoint = fileURLToPath(new URL(`../${relativePath}`, import.meta.url));
 	const result = await build({
 		entryPoints: [entryPoint],
@@ -34,6 +40,8 @@ async function loadServerModule(relativePath, privateEnv = {}) {
 			{
 				name: 'unit-test-private-env',
 				setup(esbuild) {
+					esbuild.onResolve({ filter: /.*/ }, (args) => Object.hasOwn(mocks, args.path) ? { path: args.path, namespace: 'route-mock' } : undefined);
+					esbuild.onLoad({ filter: /.*/, namespace: 'route-mock' }, (args) => ({ contents: mocks[args.path], loader: 'js' }));
 					esbuild.onResolve({ filter: /^\$env\/dynamic\/private$/ }, () => ({
 						path: 'unit-test-private-env',
 						namespace: 'unit-test'
@@ -51,7 +59,7 @@ async function loadServerModule(relativePath, privateEnv = {}) {
 }
 
 before(async () => {
-	[tokens, schemas, configs, checkpoint, openrouter, crypto, http, scrubber, s3] = await Promise.all([
+	[tokens, schemas, configs, checkpoint, openrouter, crypto, http, scrubber, s3, provenance] = await Promise.all([
 		loadServerModule('src/lib/server/v2/tokens.ts'),
 		loadServerModule('src/lib/server/v2/schemas.ts'),
 		loadServerModule('src/lib/server/v2/studyConfig.ts'),
@@ -60,7 +68,8 @@ before(async () => {
 		loadServerModule('src/lib/server/v2/crypto.ts'),
 		loadServerModule('src/lib/server/v2/http.ts'),
 		loadServerModule('src/lib/server/v2/scrubber.ts'),
-		loadServerModule('src/lib/server/v2/s3Checkpoint.ts')
+		loadServerModule('src/lib/server/v2/s3Checkpoint.ts'),
+		loadServerModule('src/lib/server/v2/provenance.ts')
 	]);
 });
 
@@ -2293,8 +2302,8 @@ test('chat route redacts before the relay and signs only the canonical text', as
 	assert.ok(source.includes('userMessage: canonicalUserMessage'), 'relay must send the canonical text');
 	assert.equal(
 		(source.match(/content: canonicalUserMessage/g) ?? []).length,
-		2,
-		'both completedHistory sites must sign the canonical text'
+		3,
+		'both completedHistory sites and the immediate user receipt sign canonical text'
 	);
 	assert.equal(
 		source.includes("role: 'user', content: body.turn.userMessage"),
@@ -2771,4 +2780,312 @@ test('chat route emits one outcome event per turn carrying the generation ID', a
 	}
 	assert.equal(context.includes('assistantText'), false);
 	assert.equal(context.includes('canonicalUserMessage'), false);
+});
+
+
+const RECEIPT_USER_ID = '11111111-1111-4111-8111-111111111111';
+const RECEIPT_ASSISTANT_ID = '22222222-2222-4222-8222-222222222222';
+function provenanceFixture(config = configs.getStudyConfig('flu')) {
+	const issued = tokens.issueSessionToken({ secret: SECRET, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID,
+		condition: config.condition, configVersion: config.configVersion, configHash: config.configHash });
+	const snapshot = canonicalSnapshot({ condition: config.condition, configVersion: config.configVersion, configHash: config.configHash }).snapshot;
+	snapshot.messages = config.initialMessages.map(({ id, role, content }) => ({ id, role, content, createdAtISO: snapshot.createdAtISO,
+		isInitial: true, completionStatus: 'complete', excludedFromModel: true }));
+	const user = { id: RECEIPT_USER_ID, turnId: RECEIPT_USER_ID, role: 'user', content: 'My name is [NAME_1]. 🧪',
+		createdAtISO: snapshot.createdAtISO, isInitial: false, completionStatus: 'complete', excludedFromModel: false };
+	const assistant = { id: RECEIPT_ASSISTANT_ID, turnId: user.id, role: 'assistant', content: 'A screened answer 🧪',
+		createdAtISO: snapshot.createdAtISO, isInitial: false, completionStatus: 'complete', excludedFromModel: false };
+	const historyTag = tokens.issueHistoryTag({ secret: SECRET, session: issued.claims, sequence: 0, history: [] });
+	return { secret: SECRET, config, session: issued.claims, snapshot, issued, historyTag, user, assistant };
+}
+function finalizedSnapshot(snapshot) {
+	const counters = {
+		totalMessages: snapshot.messages.length,
+		initialMessages: snapshot.messages.filter((m) => m.isInitial).length,
+		userMessages: snapshot.messages.filter((m) => !m.isInitial && m.role === 'user').length,
+		assistantMessages: snapshot.messages.filter((m) => !m.isInitial && m.role === 'assistant').length,
+		completeAssistantMessages: snapshot.messages.filter((m) => m.role === 'assistant' && ['complete', 'capped'].includes(m.completionStatus)).length,
+		incompleteAssistantMessages: snapshot.messages.filter((m) => m.role === 'assistant' && !['complete', 'capped'].includes(m.completionStatus)).length,
+		totalContentCodePoints: snapshot.messages.reduce((n, m) => n + Array.from(m.content).length, 0),
+		serializedUtf16CodeUnits: 0, serializedUtf8Bytes: 0
+	};
+	return canonicalSnapshot({ ...snapshot, counters });
+}
+
+test('checkpoint provenance verifies exact openings, completed legacy history, and current receipts', () => {
+	const f = provenanceFixture();
+	assert.doesNotThrow(() => provenance.verifyCheckpointProvenance(f));
+	f.snapshot.messages.push(f.user, f.assistant);
+	f.historyTag = tokens.issueHistoryTag({ secret: SECRET, session: f.session, sequence: 1, history: [f.user, f.assistant] });
+	assert.doesNotThrow(() => provenance.verifyCheckpointProvenance(f), 'parent-only completed recovery needs no receipt migration');
+	f.snapshot.messages.at(-1).completionStatus = 'capped';
+	assert.doesNotThrow(() => provenance.verifyCheckpointProvenance(f));
+	for (const mutate of [
+		(x) => { x.snapshot.messages[0].content += ' Unscreened Alex Example'; },
+		(x) => { x.snapshot.messages.at(-2).content += ' alex@example.invalid'; },
+		(x) => { x.snapshot.messages.at(-1).content += ' forged answer'; },
+		(x) => { x.snapshot.messages.at(-2).isInitial = true; },
+		(x) => { x.snapshot.messages.at(-2).excludedFromModel = true; },
+		(x) => { x.snapshot.messages.at(-1).turnId = OPERATION_ID; },
+		(x) => { x.snapshot.messages.at(-1).completionStatus = 'skipped'; },
+		(x) => { x.snapshot.messages.reverse(); }
+	]) {
+		const bad = structuredClone(f); mutate(bad);
+		assert.throws(() => provenance.verifyCheckpointProvenance(bad));
+	}
+});
+
+test('receipts bind exact Unicode prefix, identity and session across interrupted/retried output', () => {
+	const f = provenanceFixture();
+	f.assistant.completionStatus = 'incomplete'; f.assistant.excludedFromModel = true;
+	f.snapshot.messages.push(f.user, f.assistant);
+	f.messageReceipts = Object.fromEntries([f.user, f.assistant].map((m) => [m.id, provenance.issueMessageReceipt(SECRET, f.session, m)]));
+	assert.doesNotThrow(() => provenance.verifyCheckpointProvenance(f));
+	f.assistant.completionStatus = 'superseded';
+	const retry = { ...f.assistant, id: OPERATION_ID, content: 'Retry prefix 🧬', completionStatus: 'streaming' };
+	f.snapshot.messages.push(retry);
+	f.messageReceipts[retry.id] = provenance.issueMessageReceipt(SECRET, f.session, retry);
+	assert.doesNotThrow(() => provenance.verifyCheckpointProvenance(f));
+	for (const mutate of [
+		(x) => { x.snapshot.messages.at(-1).content += 'x'; },
+		(x) => { x.snapshot.messages.at(-1).content = x.snapshot.messages.at(-1).content.slice(0, -1); },
+		(x) => { x.snapshot.messages.at(-1).role = 'user'; },
+		(x) => { x.snapshot.messages.at(-1).turnId = ATTEMPT_ID; },
+		(x) => { x.session.sid = OPERATION_ID; },
+		(x) => { x.session.attempt = 'b'.repeat(64); },
+		(x) => { x.session.configHash = 'b'.repeat(64); },
+		(x) => { x.messageReceipts[OPERATION_ID] = 'v2m.' + 'A'.repeat(43); },
+		(x) => { delete x.messageReceipts; }
+	]) {
+		const bad = structuredClone(f); mutate(bad);
+		assert.throws(() => provenance.verifyCheckpointProvenance(bad));
+	}
+	const empty = { ...retry, content: '' };
+	f.snapshot.messages[f.snapshot.messages.length - 1] = empty;
+	delete f.messageReceipts[empty.id];
+	assert.doesNotThrow(() => provenance.verifyCheckpointProvenance(f), 'empty UI placeholder contains no unproven text');
+});
+
+test('checkpoint metadata cannot smuggle arbitrary narrative alongside proven content', () => {
+	const f = provenanceFixture();
+	for (const mutate of [
+		(x) => { x.reasonHint = 'My email is alex@example.invalid'; },
+		(x) => { x.snapshot.captureErrors.push({ atISO: x.snapshot.createdAtISO, stage: 'checkpoint', code: 'Alex Example' }); },
+		(x) => { x.snapshot.messages[0].failureReason = '555-010-1234'; }
+	]) {
+		const bad = structuredClone(f); mutate(bad);
+		assert.throws(() => provenance.verifyCheckpointProvenance(bad), (error) => !error.message.includes('Alex') && !error.message.includes('@'));
+	}
+});
+
+const ROUTE_LOGGER_MOCK = `export const logger = { info(){}, debug(){}, warn(){}, error(){} };`;
+const ROUTE_ENV = { SESSION_SIGNING_KEY: SECRET, OPENROUTER_API_KEY: 'synthetic-key', ENABLE_V2_CHECKPOINT: 'true', CHECKPOINT_STORE: 's3' };
+const ROUTE_MOCKS = {
+	'$lib/logger': ROUTE_LOGGER_MOCK,
+	'@vercel/functions': 'export function waitUntil(p) { globalThis.__provenanceWaits.push(p); }',
+	'$lib/server/v2/s3Checkpoint': `
+		export function getS3CheckpointConfig() { return {}; }
+		export function checkpointObject({ snapshot }) { return { streamRef: 'v2/test/reference', checksum: 'a'.repeat(64) }; }
+		export async function putCheckpointObject() { globalThis.__provenanceWrites++; return { attempts: 1 }; }
+	`
+};
+function requestFor(path, body, headers = {}) {
+	return new Request('https://study.example' + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+}
+
+test('session route demands bound prior proof for resume and rejects every unscreened revision', async () => {
+	const route = await loadServerModule('src/routes/api/v2/session/[condition]/+server.ts', ROUTE_ENV, ROUTE_MOCKS);
+	for (const condition of ['flu', 'covid', 'combo', 'demo']) {
+		const config = configs.getStudyConfig(condition);
+		const body = { v: 2, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID };
+		const fresh = await route.POST({ params: { condition }, request: requestFor('/session', body) });
+		assert.equal(fresh.status, 200);
+		const data = await fresh.json();
+		const resumedBody = { ...body, resumeConfig: { configVersion: data.configVersion, configHash: data.configHash } };
+		for (const badProof of ['', data.historyTag + 'x']) {
+			const denied = await route.POST({ params: { condition }, request: requestFor('/session', resumedBody, { 'x-session-resume-proof': badProof }) });
+			assert.equal(denied.status, 403);
+		}
+		const valid = await route.POST({ params: { condition }, request: requestFor('/session', resumedBody, { 'x-session-resume-proof': data.historyTag }) });
+		assert.equal(valid.status, 200);
+		for (const changed of [{ chatSessionKey: OPERATION_ID }, { attemptNonce: OPERATION_ID }]) {
+			const denied = await route.POST({ params: { condition }, request: requestFor('/session', { ...resumedBody, ...changed }, { 'x-session-resume-proof': data.historyTag }) });
+			assert.equal(denied.status, 403);
+		}
+		if (condition !== 'demo') {
+			for (const version of [9, 12]) {
+				const older = await route.POST({ params: { condition }, request: requestFor('/session', {
+					...body, preferredConfigVersion: `albertsons-2026-${condition}-v${version}`
+				}) });
+				assert.equal(older.status, 200);
+				const olderData = await older.json();
+				assert.equal(olderData.configVersion, `albertsons-2026-${condition}-v${version}`);
+				const wrongConfig = await route.POST({ params: { condition }, request: requestFor('/session', resumedBody,
+					{ 'x-session-resume-proof': olderData.historyTag }) });
+				assert.equal(wrongConfig.status, 403);
+			}
+		}
+		const historical = tokens.issueSessionToken({ secret: SECRET, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID,
+			condition, configVersion: config.configVersion, configHash: config.configHash, now: 1 });
+		assert.throws(() => tokens.verifySessionToken(historical.token, SECRET));
+		const priorHistory = tokens.issueHistoryTag({ secret: SECRET, session: historical.claims, sequence: 0, history: [] });
+		assert.equal((await route.POST({ params: { condition }, request: requestFor('/session', resumedBody, { 'x-session-resume-proof': priorHistory }) })).status, 200,
+			'renewal uses persistent signed history, not an expired one-hour token');
+	}
+	for (const condition of ['flu', 'covid', 'combo']) {
+		for (const version of [1, 2, 3, 4, 5, 6]) {
+			// Obtain retained config hash from the registered list through the
+			// fixed historical hashes already exercised elsewhere in this file.
+			const hashes = { 1: V1_CONFIG_HASHES, 2: V2_CONFIG_HASHES, 3: V3_CONFIG_HASHES, 4: V4_CONFIG_HASHES, 5: V5_CONFIG_HASHES, 6: V6_CONFIG_HASHES };
+			const versionName = `albertsons-2026-${condition}-v${version}`;
+			const old = tokens.issueSessionToken({ secret: SECRET, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID,
+				condition, configVersion: versionName, configHash: hashes[version][condition] });
+			const proof = tokens.issueHistoryTag({ secret: SECRET, session: old.claims, sequence: 0, history: [] });
+			const denied = await route.POST({ params: { condition }, request: requestFor('/session', {
+				v: 2, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID, resumeConfig: { configVersion: versionName, configHash: old.claims.configHash }
+			}, { 'x-session-resume-proof': proof }) });
+			assert.equal(denied.status, 409);
+		}
+	}
+});
+
+test('checkpoint route rejects unproven data and metadata before any storage call', async () => {
+	const route = await loadServerModule('src/routes/api/v2/checkpoint/+server.ts', ROUTE_ENV, ROUTE_MOCKS);
+	const f = provenanceFixture();
+	globalThis.__provenanceWrites = 0;
+	const submit = async (fixture, extras = {}) => {
+		const { json } = finalizedSnapshot(fixture.snapshot);
+		return route.POST({ request: requestFor('/checkpoint', { v: 2, createOperationId: OPERATION_ID,
+			snapshotSequence: fixture.snapshot.snapshotSequence, state: fixture.snapshot.state, transcriptJson: json,
+			historyTag: fixture.historyTag, ...extras }, { authorization: `Bearer ${fixture.issued.token}` }) });
+	};
+	const initialResponse = await submit(f);
+	assert.equal(initialResponse.status, 200, await initialResponse.text());
+	assert.equal(globalThis.__provenanceWrites, 1);
+	f.snapshot.messages.push(f.user, { ...f.assistant, completionStatus: 'incomplete', excludedFromModel: true });
+	assert.equal((await submit(f)).status, 409);
+	const receipts = Object.fromEntries(f.snapshot.messages.filter((m) => !m.isInitial).map((m) => [m.id, provenance.issueMessageReceipt(SECRET, f.session, m)]));
+	assert.equal((await submit(f, { messageReceipts: receipts })).status, 200);
+	const before = globalThis.__provenanceWrites;
+	for (const extras of [{ messageReceipts: receipts, reasonHint: 'alex@example.invalid' }, { messageReceipts: {} }]) {
+		const denied = await submit(f, extras);
+		assert.equal(denied.status, 409);
+		assert.equal(globalThis.__provenanceWrites, before);
+		assert.equal((await denied.text()).includes('alex@example.invalid'), false);
+	}
+	const forged = structuredClone(f); forged.snapshot.messages.at(-1).content += ' raw';
+	assert.equal((await submit(forged, { messageReceipts: receipts })).status, 409);
+	assert.equal(globalThis.__provenanceWrites, before);
+	const oversized = requestFor('/checkpoint', { padding: 'x'.repeat(400_001) }, { authorization: `Bearer ${f.issued.token}` });
+	assert.equal((await route.POST({ request: oversized })).status, 413);
+	assert.equal(globalThis.__provenanceWrites, before);
+});
+
+
+test('predeployment v12 completed history remains proven but unreceipted interrupted text does not', () => {
+	const old = configs.getStudyConfigRevision('flu', 'albertsons-2026-flu-v12', V12_CONFIG_HASHES.flu);
+	const f = provenanceFixture(old);
+	f.snapshot.messages.push(f.user, f.assistant);
+	f.historyTag = tokens.issueHistoryTag({ secret: SECRET, session: f.session, sequence: 1, history: [f.user, f.assistant] });
+	assert.doesNotThrow(() => provenance.verifyCheckpointProvenance(f));
+	f.snapshot.messages.push({ ...f.assistant, id: OPERATION_ID, content: 'Unproven interrupted text', completionStatus: 'incomplete', excludedFromModel: true });
+	assert.throws(() => provenance.verifyCheckpointProvenance(f));
+});
+
+test('checkpoint route rejects duplicate-key raw bytes even with correct counters and valid receipts', async () => {
+	const route = await loadServerModule('src/routes/api/v2/checkpoint/+server.ts', ROUTE_ENV, ROUTE_MOCKS);
+	const f = provenanceFixture(); f.snapshot.messages.push(f.user);
+	const finalized = finalizedSnapshot(f.snapshot).snapshot;
+	let transcriptJson = '';
+	for (let i = 0; i < 10; i++) {
+		transcriptJson = JSON.stringify(finalized).replace(JSON.stringify(f.user.content),
+			JSON.stringify('Alex Hidden alex@example.invalid') + ',"content":' + JSON.stringify(f.user.content));
+		if (finalized.counters.serializedUtf16CodeUnits === transcriptJson.length && finalized.counters.serializedUtf8Bytes === Buffer.byteLength(transcriptJson)) break;
+		finalized.counters.serializedUtf16CodeUnits = transcriptJson.length;
+		finalized.counters.serializedUtf8Bytes = Buffer.byteLength(transcriptJson);
+	}
+	assert.equal(JSON.parse(transcriptJson).messages.at(-1).content, f.user.content);
+	assert.equal(JSON.parse(transcriptJson).counters.serializedUtf16CodeUnits, transcriptJson.length);
+	globalThis.__provenanceWrites = 0;
+	const response = await route.POST({ request: requestFor('/checkpoint', { v: 2, createOperationId: OPERATION_ID,
+		snapshotSequence: finalized.snapshotSequence, state: finalized.state, transcriptJson,
+		historyTag: f.historyTag, messageReceipts: { [f.user.id]: provenance.issueMessageReceipt(SECRET, f.session, f.user) }
+	}, { authorization: `Bearer ${f.issued.token}` }) });
+	assert.equal(response.status, 400);
+	assert.equal(globalThis.__provenanceWrites, 0);
+	assert.equal((await response.text()).includes('alex@example.invalid'), false);
+});
+
+const CHAT_ROUTE_MOCKS = { ...ROUTE_MOCKS,
+	'$lib/server/v2/scrubber': `
+		export class ScrubberError extends Error {}
+		export async function scrubUserMessage() { globalThis.__provenanceScrubs++; return { text: 'My name is [NAME_1]. 🧪', spanCount: 1, attempts: 1, usedFallback: false }; }
+	`,
+	'$lib/server/v2/openrouter': `
+		export class OpenRouterStartError extends Error {}
+		export async function startOpenRouterStream(args) {
+			globalThis.__provenanceAnswers++; globalThis.__provenanceRelayed = args.userMessage;
+			return { generationId: 'synthetic-generation', cancel(){}, async *events() {
+				yield { kind: 'delta', text: 'A screened ' };
+				yield { kind: 'delta', text: 'answer 🧪' };
+				if (globalThis.__provenanceInterrupt) throw new Error('Synthetic interruption');
+				yield { kind: 'done', finishReason: 'stop' };
+			}};
+		}
+	`
+};
+test('actual chat route emits canonical-user and interrupted-prefix receipts that verify at checkpoint', async () => {
+	const route = await loadServerModule('src/routes/api/v2/chat/+server.ts', ROUTE_ENV, CHAT_ROUTE_MOCKS);
+	for (const interrupted of [false, true]) {
+		const f = provenanceFixture();
+		globalThis.__provenanceScrubs = 0; globalThis.__provenanceAnswers = 0; globalThis.__provenanceInterrupt = interrupted;
+		const response = await route.POST({ request: requestFor('/chat', { v: 2, sequence: 1, history: [], historyTag: f.historyTag,
+			turn: { id: f.user.id, userMessage: 'My name is Alex Example. 🧪' } },
+			{ authorization: `Bearer ${f.issued.token}`, 'idempotency-key': f.user.id }) });
+		assert.equal(response.status, 200);
+		const events = (await response.text()).trim().split('\n\n').map((part) => {
+			const lines = part.split('\n'); return { event: lines[0].slice(7), data: JSON.parse(lines[1].slice(6)) };
+		});
+		const meta = events.find((e) => e.event === 'meta').data;
+		const deltas = events.filter((e) => e.event === 'delta');
+		assert.equal(meta.scrubbedUserMessage, f.user.content);
+		assert.equal(globalThis.__provenanceRelayed, f.user.content);
+		assert.equal(globalThis.__provenanceScrubs, 1); assert.equal(globalThis.__provenanceAnswers, 1);
+		f.assistant.id = meta.assistantMessageId;
+		f.assistant.content = '';
+		f.assistant.completionStatus = 'incomplete'; f.assistant.excludedFromModel = true;
+		f.snapshot.messages.push(f.user, f.assistant);
+		f.messageReceipts = { [f.user.id]: meta.userReceipt };
+		assert.doesNotThrow(() => provenance.verifyCheckpointProvenance(f), 'current canonical user before answer');
+		for (const delta of deltas) {
+			f.assistant.content += delta.data.text;
+			f.messageReceipts[f.assistant.id] = delta.data.receipt;
+			assert.doesNotThrow(() => provenance.verifyCheckpointProvenance(f));
+		}
+		assert.equal(events.at(-1).event, interrupted ? 'error' : 'done');
+		if (!interrupted) {
+			f.assistant.completionStatus = 'complete'; f.assistant.excludedFromModel = false;
+			f.historyTag = events.at(-1).data.historyTag;
+			delete f.messageReceipts;
+			assert.doesNotThrow(() => provenance.verifyCheckpointProvenance(f), 'completed parent-only recovery uses history');
+		}
+	}
+});
+
+test('pre-screening session credentials cannot call chat or checkpoint even if cryptographically valid', async () => {
+	const chat = await loadServerModule('src/routes/api/v2/chat/+server.ts', ROUTE_ENV, CHAT_ROUTE_MOCKS);
+	const checkpointRoute = await loadServerModule('src/routes/api/v2/checkpoint/+server.ts', ROUTE_ENV, ROUTE_MOCKS);
+	globalThis.__provenanceScrubs = 0; globalThis.__provenanceAnswers = 0; globalThis.__provenanceWrites = 0;
+	for (const [version, hashes] of Object.entries({ 1: V1_CONFIG_HASHES, 2: V2_CONFIG_HASHES, 3: V3_CONFIG_HASHES, 4: V4_CONFIG_HASHES, 5: V5_CONFIG_HASHES, 6: V6_CONFIG_HASHES })) {
+		for (const condition of ['flu', 'covid', 'combo']) {
+			const old = tokens.issueSessionToken({ secret: SECRET, chatSessionKey: SESSION_ID, attemptNonce: ATTEMPT_ID,
+				condition, configVersion: `albertsons-2026-${condition}-v${version}`, configHash: hashes[condition] });
+			for (const route of [chat, checkpointRoute]) {
+				const denied = await route.POST({ request: requestFor('/api', {}, { authorization: `Bearer ${old.token}` }) });
+				assert.equal(denied.status, 409);
+				assert.equal((await denied.json()).error.code, 'config_revision_unsupported');
+			}
+		}
+	}
+	assert.equal(globalThis.__provenanceScrubs, 0); assert.equal(globalThis.__provenanceAnswers, 0); assert.equal(globalThis.__provenanceWrites, 0);
 });

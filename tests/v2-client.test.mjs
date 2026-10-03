@@ -43,6 +43,7 @@ function fixtureFactory() {
 		createdAtISO: now,
 		updatedAtISO: now,
 		chatEndISO: null,
+		terminalReason: null,
 		captureErrors: []
 	});
 	const initial = (content = 'x') => ({
@@ -513,7 +514,7 @@ test('an expired initial guard is not restarted by a delayed first enqueue', asy
 			onFailure: (code) => assert.fail(code)
 		});
 		await new Promise((resolve) => setTimeout(resolve, 125));
-		worker.enqueue({ snapshot: { snapshotSequence: 100, state: 'active' }, json: '{"revision":100}' }, 'late');
+		worker.enqueue({ snapshot: { messages: [], snapshotSequence: 100, state: 'active' }, json: '{"revision":100}' }, 'late');
 		await Promise.race([
 			settled,
 			new Promise((_, reject) => setTimeout(() => reject(new Error('expired guard restarted')), 60))
@@ -559,8 +560,8 @@ test('the reload guard coalesces pending checkpoint work into the newest cumulat
 			onAcknowledged: () => {},
 			onFailure: (code) => assert.fail(code)
 		});
-		worker.enqueue({ snapshot: { snapshotSequence: 101, state: 'active' }, json: '{"revision":101}' }, 'old');
-		worker.enqueue({ snapshot: { snapshotSequence: 102, state: 'active' }, json: '{"revision":102}' }, 'new');
+		worker.enqueue({ snapshot: { messages: [], snapshotSequence: 101, state: 'active' }, json: '{"revision":101}' }, 'old');
+		worker.enqueue({ snapshot: { messages: [], snapshotSequence: 102, state: 'active' }, json: '{"revision":102}' }, 'new');
 		await new Promise((resolve) => setTimeout(resolve, 80));
 		assert.deepEqual(requests.map((request) => request.snapshotSequence), [102]);
 		assert.deepEqual(leases, [['start', 102], ['settled', 102]]);
@@ -609,13 +610,13 @@ test('an ambiguous checkpoint keeps its lease and guards the next cumulative wri
 			onAcknowledged: () => {},
 			onFailure: (code) => failures.push(code)
 		});
-		worker.enqueue({ snapshot: { snapshotSequence: 201, state: 'active' }, json: '{"revision":201}' }, 'ambiguous');
+		worker.enqueue({ snapshot: { messages: [], snapshotSequence: 201, state: 'active' }, json: '{"revision":201}' }, 'ambiguous');
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.deepEqual(requests, [201]);
 		assert.deepEqual(leases, [['start', 201]]);
 		assert.deepEqual(failures, ['checkpoint_update_ambiguous']);
-		worker.enqueue({ snapshot: { snapshotSequence: 202, state: 'active' }, json: '{"revision":202}' }, 'stale');
-		worker.enqueue({ snapshot: { snapshotSequence: 203, state: 'active' }, json: '{"revision":203}' }, 'newest');
+		worker.enqueue({ snapshot: { messages: [], snapshotSequence: 202, state: 'active' }, json: '{"revision":202}' }, 'stale');
+		worker.enqueue({ snapshot: { messages: [], snapshotSequence: 203, state: 'active' }, json: '{"revision":203}' }, 'newest');
 		await new Promise((resolve) => setTimeout(resolve, 180));
 		assert.deepEqual(requests, [201, 203]);
 		assert.deepEqual(leases, [
@@ -703,7 +704,7 @@ test('ambiguous HTTP and malformed success responses retain checkpoint leases', 
 					}
 				});
 				const sequence = 300 + index;
-				worker.enqueue({ snapshot: { snapshotSequence: sequence, state: 'active' }, json: JSON.stringify({ revision: sequence }) }, 'ambiguous');
+				worker.enqueue({ snapshot: { messages: [], snapshotSequence: sequence, state: 'active' }, json: JSON.stringify({ revision: sequence }) }, 'ambiguous');
 				await Promise.race([
 					failed,
 					new Promise((_, reject) => setTimeout(() => reject(new Error('checkpoint failure callback timed out')), 1_000))
@@ -759,14 +760,14 @@ test('a definitive failure drops stale pending work but permits a later lifecycl
 			onAcknowledged: () => {},
 			onFailure: (code) => failures.push(code)
 		});
-		worker.enqueue({ snapshot: { snapshotSequence: 401, state: 'active' }, json: '{"revision":401}' }, 'question');
+		worker.enqueue({ snapshot: { messages: [], snapshotSequence: 401, state: 'active' }, json: '{"revision":401}' }, 'question');
 		await new Promise((resolve) => setTimeout(resolve, 5));
-		worker.enqueue({ snapshot: { snapshotSequence: 402, state: 'active' }, json: '{"revision":402}' }, 'answer');
+		worker.enqueue({ snapshot: { messages: [], snapshotSequence: 402, state: 'active' }, json: '{"revision":402}' }, 'answer');
 		releaseFirst();
 		await new Promise((resolve) => setTimeout(resolve, 25));
 		assert.deepEqual(requests, [401]);
 		assert.deepEqual(failures, ['checkpoint_rate_limited']);
-		worker.enqueue({ snapshot: { snapshotSequence: 403, state: 'active' }, json: '{"revision":403}' }, 'pagehide');
+		worker.enqueue({ snapshot: { messages: [], snapshotSequence: 403, state: 'active' }, json: '{"revision":403}' }, 'pagehide');
 		await new Promise((resolve) => setTimeout(resolve, 25));
 		assert.deepEqual(requests, [401, 403]);
 		assert.deepEqual(leases, [
@@ -1003,4 +1004,129 @@ test('raw user turns are never persisted before canonicalization', async () => {
 	);
 	assert.ok(commitBody.includes('canonicalView(candidateState, pendingCanonicalTurnIds)'));
 	assert.equal(commitBody.includes('serializeSnapshot(candidateState)'), false);
+});
+
+
+test('resume sends prior proof in a header without expanding the version-only request body', async () => {
+	const api = await loadClientModule('src/lib/v2/api.ts');
+	const { state } = fixtureFactory(); const current = state();
+	const originalFetch = globalThis.fetch;
+	let sent;
+	globalThis.fetch = async (_url, options) => {
+		sent = options;
+		return new Response(JSON.stringify({ v: 2, sessionToken: 'session-token-for-resume-1234567890', sessionKey: current.chatSessionKey,
+			condition: current.condition, configVersion: current.configVersion, configHash: current.configHash,
+			initialMessages: [], ui: {}, historyTag: current.historyTag }), { status: 200 });
+	};
+	try {
+		await api.createPublicSession(current.condition, current.chatSessionKey, current.attemptNonce, undefined,
+			{ configVersion: current.configVersion, configHash: current.configHash, proof: current.historyTag });
+		assert.equal(sent.headers['x-session-resume-proof'], current.historyTag);
+		assert.deepEqual(JSON.parse(sent.body).resumeConfig, { configVersion: current.configVersion, configHash: current.configHash });
+		assert.equal(sent.body.includes(current.historyTag), false);
+		assert.ok(Buffer.byteLength(sent.body) < 1_024);
+	} finally { globalThis.fetch = originalFetch; }
+});
+
+test('receipt recovery is browser-local and binds unchanged parent messages only', async () => {
+	const [proof, storage, snapshots] = await Promise.all([
+		loadClientModule('src/lib/v2/checkpointProof.ts'), loadClientModule('src/lib/v2/storage.ts'), loadClientModule('src/lib/v2/snapshot.ts')
+	]);
+	const { state, now } = fixtureFactory(); const local = state();
+	const id = crypto.randomUUID();
+	local.messages = [{ id, turnId: id, role: 'user', content: '[NAME_1]', createdAtISO: now,
+		isInitial: false, completionStatus: 'complete', excludedFromModel: false }];
+	local.messageReceipts = { [id]: 'v2m.' + 'A'.repeat(43) };
+	const originalStorage = globalThis.sessionStorage; const values = new Map();
+	globalThis.sessionStorage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+	try {
+		assert.equal(storage.persistState(local), null);
+		const reloaded = storage.readPersistedState(local.chatSessionKey);
+		assert.equal(reloaded.status, 'ok');
+		assert.deepEqual(reloaded.state.messageReceipts, local.messageReceipts);
+		const serialized = snapshots.serializeSnapshot(local);
+		assert.equal(serialized.json.includes('v2m.'), false);
+		assert.equal(serialized.json.includes('messageReceipts'), false);
+		const parent = { ...local, messageReceipts: undefined };
+		assert.deepEqual(proof.recoveredMessageReceipts(parent, reloaded.state), local.messageReceipts);
+		assert.deepEqual(proof.recoveredMessageReceipts(parent, null), {}, 'parent-only recovery cannot invent receipts');
+		for (const change of [{ content: 'Different text' }, { turnId: crypto.randomUUID() }, { role: 'assistant' }]) {
+			const changedParent = { ...parent, messages: [{ ...parent.messages[0], ...change }] };
+			assert.deepEqual(proof.recoveredMessageReceipts(changedParent, reloaded.state), {});
+		}
+	} finally { globalThis.sessionStorage = originalStorage; }
+});
+
+test('queued checkpoint keeps the proof of its exact prefix even if streaming advances', async () => {
+	const [checkpoint, snapshots] = await Promise.all([
+		loadClientModule('src/lib/v2/checkpointWorker.ts'), loadClientModule('src/lib/v2/snapshot.ts')
+	]);
+	const { state, now } = fixtureFactory(); const current = state();
+	const id = crypto.randomUUID();
+	current.messages = [{ id, turnId: crypto.randomUUID(), role: 'assistant', content: 'First 🧪', createdAtISO: now,
+		isInitial: false, completionStatus: 'incomplete', excludedFromModel: true }];
+	current.messageReceipts = { [id]: 'v2m.' + 'A'.repeat(43) };
+	const originalWindow = globalThis.window; const originalFetch = globalThis.fetch;
+	globalThis.window = { setTimeout, clearTimeout };
+	let sent; let acknowledged;
+	const completed = new Promise((resolve) => { acknowledged = resolve; });
+	globalThis.fetch = async (_url, options) => {
+		sent = JSON.parse(options.body);
+		return new Response(JSON.stringify({ v: 2, checkpointHandle: 'signed-handle-for-proof-test-1234567890',
+			acknowledgedSequence: sent.snapshotSequence, checksum: crypto.createHash('sha256').update(sent.transcriptJson).digest('hex') }), { status: 200 });
+	};
+	const worker = new checkpoint.CheckpointWorker({ getState: () => current, getToken: () => 'token', initialRecoveryDelayMs: 20,
+		onLeaseStarted(){}, onLeaseSettled(){}, onAcknowledged: acknowledged, onFailure: (code) => assert.fail(code) });
+	try {
+		worker.enqueue(snapshots.serializeSnapshot(current), 'assistant_incomplete');
+		current.messages[0].content += ' next'; current.messageReceipts[id] = 'v2m.' + 'B'.repeat(43);
+		current.historyTag = 'newer-history-tag-must-not-replace-queued-proof';
+		await completed;
+		assert.equal(JSON.parse(sent.transcriptJson).messages[0].content, 'First 🧪');
+		assert.equal(sent.messageReceipts[id], 'v2m.' + 'A'.repeat(43));
+		assert.notEqual(sent.historyTag, current.historyTag);
+	} finally { worker.stop(); globalThis.window = originalWindow; globalThis.fetch = originalFetch; }
+});
+
+test('snapshot metadata removes arbitrary narrative and checkpoint preflight includes proof overhead', async () => {
+	const snapshots = await loadClientModule('src/lib/v2/snapshot.ts');
+	const { state, initial, now } = fixtureFactory(); const current = state();
+	current.messages = [{ ...initial(), failureReason: 'Alex Example alex@example.invalid' }];
+	current.captureErrors = [{ atISO: now, stage: 'checkpoint', code: '555-010-1234' }];
+	const safe = snapshots.serializeSnapshot(current);
+	assert.equal(safe.json.includes('alex@example.invalid'), false);
+	assert.equal(safe.json.includes('555-010-1234'), false);
+	assert.equal(safe.snapshot.messages[0].failureReason, 'client_error');
+	assert.equal(safe.snapshot.captureErrors[0].code, 'client_error');
+	current.historyTag = 't'.repeat(8_192);
+	assert.equal(snapshots.checkpointBodyFits(current, { snapshot: { ...safe.snapshot, messages: [] }, json: 'x'.repeat(393_000) }), false);
+});
+
+test('stream parser forwards server message identity and prefix receipts, rejecting malformed proof fields', async () => {
+	const api = await loadClientModule('src/lib/v2/api.ts');
+	const originalWindow = globalThis.window; const originalFetch = globalThis.fetch;
+	globalThis.window = { setTimeout, clearTimeout };
+	const id = crypto.randomUUID(); const turnId = crypto.randomUUID();
+	const receipt = 'v2m.' + 'A'.repeat(43);
+	const done = { v: 2, sequence: 1, historyTag: 'history-tag-for-receipt-parser-1234567890', assistantMessageId: id, finishReason: 'stop', completionStatus: 'complete' };
+	const metas = []; const deltas = [];
+	const options = { token: 'test-token', sequence: 1, history: [], historyTag: 'prior-history', turn: { id: turnId, userMessage: 'test' },
+		onMeta: (value) => metas.push(value), onDelta: (text, proof) => deltas.push({ text, proof }) };
+	try {
+		globalThis.fetch = async () => sseChatResponse([
+			['meta', { v: 2, sequence: 1, assistantMessageId: id, scrubbedUserMessage: '[NAME_1]', userReceipt: receipt }],
+			['delta', { v: 2, text: 'Safe 🧪', receipt }], ['done', done]
+		]);
+		await api.streamChat(options);
+		assert.equal(metas[0].assistantMessageId, id); assert.equal(metas[0].userReceipt, receipt);
+		assert.deepEqual(deltas, [{ text: 'Safe 🧪', proof: receipt }]);
+		globalThis.fetch = async () => sseChatResponse([
+			['meta', { v: 2, sequence: 1, assistantMessageId: id, userReceipt: 'invented' }], ['done', done]
+		]);
+		await assert.rejects(api.streamChat(options), (error) => error.code === 'stream_invalid_meta');
+		globalThis.fetch = async () => sseChatResponse([
+			['meta', { v: 2, sequence: 1 }], ['delta', { v: 2, text: 'Safe', receipt: 'invented' }], ['done', done]
+		]);
+		await assert.rejects(api.streamChat(options), (error) => error.code === 'stream_invalid_delta');
+	} finally { globalThis.window = originalWindow; globalThis.fetch = originalFetch; }
 });

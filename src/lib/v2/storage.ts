@@ -4,6 +4,7 @@ import {
 	MAX_USER_CODE_POINTS,
 	countCodePoints,
 } from "./constants";
+import { MESSAGE_RECEIPT_PATTERN } from "./checkpointProof";
 import type { CaptureError, StudyCondition, V2PersistedState } from "./types";
 
 const STATE_PREFIX = "vegapunk:v2:";
@@ -38,7 +39,7 @@ const TERMINAL_REASONS = [
 const STATE_KEYS = new Set([
 	"schemaVersion", "condition", "chatSessionKey", "attemptNonce", "configVersion",
 	"configHash", "createOperationId", "messages", "sequence", "historyTag", "draft",
-	"checkpointHandle", "lastAcknowledgedCheckpointRevision",
+	"messageReceipts", "checkpointHandle", "lastAcknowledgedCheckpointRevision",
 	"checkpointInFlightSequence", "checkpointInFlightStartedAtISO",
 	"lastParentAcknowledgedRevision", "parentSyncCount", "snapshotSequence", "lifecycle",
 	"createdAtISO", "updatedAtISO", "chatEndISO", "terminalReason", "captureErrors",
@@ -125,6 +126,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isPersistedState(value: unknown): value is V2PersistedState {
 	if (!isRecord(value)) return false;
+	if (value.messageReceipts !== undefined && (!isRecord(value.messageReceipts) ||
+		Object.keys(value.messageReceipts).length > MAX_SNAPSHOT_MESSAGES ||
+		!Object.entries(value.messageReceipts).every(([id, receipt]) => UUID_PATTERN.test(id) &&
+			typeof receipt === "string" && MESSAGE_RECEIPT_PATTERN.test(receipt)))) return false;
 	if (
 		!Object.keys(value).every((key) => STATE_KEYS.has(key)) ||
 		value.schemaVersion !== 2 ||

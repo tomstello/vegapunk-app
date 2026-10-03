@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/private';
+import { assertScreenedConfiguration, verifyCheckpointProvenance } from '$lib/server/v2/provenance';
 import { logger } from '$lib/logger';
 import {
 	CheckpointStoreError,
@@ -72,6 +73,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		if (!config) {
 			throw new V2HttpError(409, 'config_revision_unavailable', 'The saved chat configuration is unavailable');
 		}
+		try { assertScreenedConfiguration(config); }
+		catch { throw new V2HttpError(409, 'config_revision_unsupported', 'This older chat configuration is no longer supported'); }
 		const body = parseWithSchema(
 			CheckpointRequestSchema,
 			await readJsonWithByteLimit(request, MAX_CHECKPOINT_REQUEST_BYTES)
@@ -80,8 +83,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		if (utf8Length > MAX_TRANSCRIPT_UTF8_BYTES) {
 			throw new V2HttpError(413, 'transcript_too_large', 'Transcript exceeds checkpoint capacity');
 		}
+		let validatedSnapshot;
 		try {
-			validateTranscriptSnapshot(body.transcriptJson, {
+			validatedSnapshot = validateTranscriptSnapshot(body.transcriptJson, {
 				sessionKey: session.sid,
 				condition: session.condition,
 				configVersion: session.configVersion,
@@ -95,6 +99,12 @@ export const POST: RequestHandler = async ({ request }) => {
 				'invalid_transcript',
 				error instanceof Error ? error.message : 'Transcript snapshot is invalid'
 			);
+		}
+		try {
+			verifyCheckpointProvenance({ secret, session, config, snapshot: validatedSnapshot,
+				historyTag: body.historyTag, messageReceipts: body.messageReceipts, reasonHint: body.reasonHint });
+		} catch {
+			throw new V2HttpError(409, 'invalid_checkpoint_provenance', 'Transcript backup could not verify the saved message contents. Existing saved data has not been changed.');
 		}
 		const snapshot: CheckpointSnapshot = {
 			createOperationId: body.createOperationId,
